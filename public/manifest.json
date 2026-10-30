@@ -1,0 +1,25 @@
+{
+  "name": "Chronos — Schedule & Alarms",
+  "short_name": "Chronos",
+  "description": "Premium timetable dashboard, smart schedule document parser, and precision engineering alarms.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#121214",
+  "theme_color": "#121214",
+  "categories": ["productivity", "utilities", "education"],
+  "icons": [
+    {
+      "src": "/chronos-icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/chronos-icon.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
