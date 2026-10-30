@@ -35,15 +35,23 @@ export function getLocalTimeZone(): string {
  * Load AI settings from localStorage
  */
 export function loadAISettings(): AISettings {
+  const envKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || '';
   try {
     const saved = localStorage.getItem('chronos_ai_settings');
-    if (saved) return JSON.parse(saved);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (!parsed.apiKey && envKey) {
+        parsed.apiKey = envKey;
+        if (parsed.provider === 'auto') parsed.provider = 'gemini';
+      }
+      return parsed;
+    }
   } catch (e) {
     console.warn('Failed to load AI settings', e);
   }
   return {
-    provider: 'auto',
-    apiKey: '',
+    provider: envKey ? 'gemini' : 'auto',
+    apiKey: envKey,
     modelName: 'gemini-1.5-flash',
   };
 }
