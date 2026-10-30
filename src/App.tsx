@@ -107,6 +107,11 @@ const IconLogOut = ({ size = 14, className = '', style }: IconProps) => (
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
   </svg>
 );
+const IconDownload = ({ size = 14, className = '', style }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+  </svg>
+);
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type NavView = 'dashboard' | 'calendar' | 'alarms' | 'settings';
@@ -541,12 +546,16 @@ function Sidebar({
   userProfile,
   alarmCount,
   onOpenProfile,
+  onInstallApp,
+  isInstalled,
 }: {
   view: NavView;
   setView: (v: NavView) => void;
   userProfile: UserProfile;
   alarmCount: number;
   onOpenProfile: () => void;
+  onInstallApp: () => void;
+  isInstalled: boolean;
 }) {
   return (
     <aside className="sidebar">
@@ -602,6 +611,30 @@ function Sidebar({
           <div className="streak-fill" style={{ width: '78%' }} />
         </div>
       </div>
+
+      {/* Install App button (Desktop/Mobile) */}
+      {!isInstalled && (
+        <div style={{ margin: '0 10px 10px' }}>
+          <button
+            onClick={onInstallApp}
+            className="btn-outline"
+            style={{
+              width: '100%',
+              justifyContent: 'center',
+              padding: '7px 8px',
+              fontSize: '11px',
+              borderColor: 'rgba(212,175,55,0.3)',
+              background: 'rgba(212,175,55,0.06)',
+              color: 'var(--gold)',
+              fontWeight: 600,
+            }}
+            title="Install Chronos as a standalone desktop PC or mobile app"
+          >
+            <IconDownload size={13} />
+            <span>Install App (PC/Mobile)</span>
+          </button>
+        </div>
+      )}
 
       {/* Profile */}
       <div className="sidebar-profile" onClick={onOpenProfile} title="Click to view and edit profile">
@@ -1463,6 +1496,8 @@ function SettingsView({
   userProfile,
   onUpdateProfile,
   onSignOut,
+  onInstallApp,
+  isInstalled,
   toast,
 }: {
   alarmMode: AlarmMode;
@@ -1470,6 +1505,8 @@ function SettingsView({
   userProfile: UserProfile;
   onUpdateProfile: (p: UserProfile) => void;
   onSignOut: () => void;
+  onInstallApp: () => void;
+  isInstalled: boolean;
   toast: (msg: string) => void;
 }) {
   const [notifSound, setNotifSound] = useState(true);
@@ -1564,6 +1601,39 @@ function SettingsView({
             <IconLogOut size={13} />
             <span>Switch Profile / Sign Out</span>
           </button>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection title="Native App & Cloud Deployment" icon={<IconDownload size={15} />}>
+        <Row
+          label="Standalone Desktop & Mobile App"
+          sub={isInstalled ? "Chronos is currently running as an installed standalone app." : "Install Chronos to your PC desktop or phone home screen for offline access & native alerts."}
+          right={
+            <button
+              className="btn-gold"
+              onClick={onInstallApp}
+              style={{ padding: '6px 12px', fontSize: '12px' }}
+            >
+              <IconDownload size={13} />
+              <span>{isInstalled ? 'App Installed' : 'Install App'}</span>
+            </button>
+          }
+        />
+
+        <div style={{ background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', padding: '14px', border: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+            <span style={{ fontSize: '12.5px', fontWeight: 700, color: 'var(--text-primary)' }}>Deploy via Render (Free Static Site)</span>
+            <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--gold)', background: 'rgba(212,175,55,0.12)', padding: '2px 8px', borderRadius: '4px' }}>render.yaml Ready</span>
+          </div>
+          <p style={{ fontSize: '11.5px', color: 'var(--text-secondary)', lineHeight: '1.4', marginBottom: '10px' }}>
+            Deploy Chronos live on Render with automatic HTTPS and global CDN. Push this repository to GitHub, then create a new <strong>Static Site</strong> on Render.
+          </p>
+          <div style={{ background: '#0d0d0f', padding: '10px 12px', borderRadius: '6px', fontFamily: 'monospace', fontSize: '11px', color: '#c5c2be', border: '1px solid var(--border-strong)', lineHeight: '1.6', userSelect: 'all' }}>
+            <span style={{ color: 'var(--gold)' }}># 1. Add your GitHub remote</span><br/>
+            git remote add origin https://github.com/&lt;your-username&gt;/chronos.git<br/>
+            <span style={{ color: 'var(--gold)' }}># 2. Push to GitHub</span><br/>
+            git push -u origin main
+          </div>
         </div>
       </SettingsSection>
 
@@ -1717,6 +1787,31 @@ export default function App() {
   const [activeAlarmEvent, setActiveAlarmEvent] = useState<ScheduleEvent | null>(null);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
 
+  // PWA App Installation hook
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstalled, setIsInstalled] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return window.matchMedia('(display-mode: standalone)').matches ||
+             (window.navigator as any).standalone === true;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    const handlePrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handlePrompt);
+    window.addEventListener('appinstalled', () => {
+      setIsInstalled(true);
+      setDeferredPrompt(null);
+    });
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handlePrompt);
+    };
+  }, []);
+
   // User Profile state (loaded from localStorage or null to trigger Sign Up)
   const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
     try {
@@ -1825,6 +1920,24 @@ export default function App() {
     toast('Signed out. Please create or select a profile.', 'info');
   };
 
+  const handleInstallApp = async () => {
+    if (deferredPrompt) {
+      try {
+        deferredPrompt.prompt();
+        const choice = await deferredPrompt.userChoice;
+        if (choice.outcome === 'accepted') {
+          toast('Installing Chronos as desktop application...', 'success');
+          setIsInstalled(true);
+        }
+        setDeferredPrompt(null);
+      } catch (err) {
+        console.warn('Install prompt error:', err);
+      }
+    } else {
+      toast('Click the (⊕ Install) button in your browser address bar to install as PC App!', 'info');
+    }
+  };
+
   // If user has not signed up yet, show the Sign Up view!
   if (!userProfile || isEditingProfile) {
     return (
@@ -1843,6 +1956,8 @@ export default function App() {
         userProfile={userProfile}
         alarmCount={alarmCount}
         onOpenProfile={() => setIsEditingProfile(true)}
+        onInstallApp={handleInstallApp}
+        isInstalled={isInstalled}
       />
 
       <div className="main-area">
@@ -1906,6 +2021,8 @@ export default function App() {
             userProfile={userProfile}
             onUpdateProfile={setUserProfile}
             onSignOut={handleSignOut}
+            onInstallApp={handleInstallApp}
+            isInstalled={isInstalled}
             toast={toast}
           />
         )}
