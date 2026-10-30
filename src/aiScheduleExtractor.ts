@@ -56,24 +56,30 @@ export function saveAISettings(settings: AISettings): void {
 }
 
 const AI_SYSTEM_PROMPT = `You are Chronos Timetable AI, a high-precision schedule and alarms extraction engine.
-Analyze the provided document text (which could be a course syllabus, university timetable, daily planner, or study schedule) and extract every recurring or scheduled event.
+Analyze the provided document text (which could be a course syllabus, university timetable, daily planner, column-based schedule, or study timetable) and extract every single scheduled event.
 
 User Timezone: {{TIMEZONE}}
 
+IMPORTANT COLUMN & TIMETABLE RULES:
+1. The timetable is frequently organized in COLUMNS (e.g. days of the week as columns: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday).
+2. For EACH day column (especially Friday, etc.), look at everything in that day's column or under that day's section. Extract EVERY SINGLE event or task under that day with its exact time.
+3. Timetable Time Disambiguation:
+   - In academic and work timetables, times written as 1:00 to 6:00 without explicit AM/PM are afternoon/evening (PM: 13:00 to 18:00). For example, "5:00" is 17:00 (5:00 PM), not 5:00 AM!
+   - Times like "5:00 - 6:00" or "5.00 - 6.00" mean 17:00 (start hour 17, minute 0) with 60 min duration.
+   - Times like "8:00 - 10:00" mean 08:00 (start hour 8, minute 0) with 120 min duration.
+4. If an event occurs on multiple days (e.g. "Mon, Wed", "Daily", "Tuesdays and Thursdays"), output a separate object for EACH day.
+5. Ensure hours are in 24h format (e.g. 5:00 PM is hour 17, 2:00 PM is hour 14, 8:00 AM is hour 8).
+
 For each event found, return a JSON array of objects with EXACTLY these fields:
 - "title": (string) Clean event or course name without redundant codes.
-- "subtitle": (string) Course code, location, lecturer, or details (e.g. "MAT 301 - LT2", "Zoom Room A").
+- "subtitle": (string) Course code, location, lecturer, or details (e.g. "SEN 292 · LT2", "Project Review").
 - "day": (integer) Day of week: 0 = Monday, 1 = Tuesday, 2 = Wednesday, 3 = Thursday, 4 = Friday, 5 = Saturday, 6 = Sunday.
-- "hour": (integer) 24-hour format start hour (0 to 23).
+- "hour": (integer) 24-hour format start hour (0 to 23). E.g. 17 for 5:00 PM.
 - "minute": (integer) Start minute (0 to 59).
 - "duration": (integer) Duration of the event in minutes (e.g. 60, 90, 120). Default to 60 if not specified.
 - "category": (string) Must be one of: "academic", "spiritual", "engineering", "meeting".
 
-Rules:
-1. If an event occurs on multiple days (e.g. "Mon, Wed", "Daily", "Tuesdays and Thursdays"), output a separate object for EACH day.
-2. Ensure hours are in 24h format (e.g. 2:00 PM is hour 14, 8:00 AM is hour 8).
-3. Do NOT make up fake events. Only extract events actually present or implied by the document.
-4. Output STRICT JSON ONLY. Wrap the array in [ ... ] with no markdown backticks, no markdown code blocks, and no introductory text.`;
+Output STRICT JSON ONLY. Wrap the array in [ ... ] with no markdown backticks and no introductory text.`;
 
 /**
  * Extract schedule using Google Gemini API

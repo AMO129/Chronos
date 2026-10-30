@@ -170,12 +170,15 @@ function getFirstName(name: string): string {
   return name.trim().split(/\s+/)[0] || 'there';
 }
 
-// ─── Audio Chime, Vibration & Desktop / Mobile Notifications ──────────────────
+// ─── Audio Chime, Spoken Voice & Mobile Notifications ─────────────────────────
 function playAlarmChime() {
   try {
     const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextClass) return;
     const ctx = new AudioContextClass();
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
     const now = ctx.currentTime;
 
     // Harmonic golden chime: D5 (587Hz), A5 (880Hz), D6 (1174Hz)
@@ -195,6 +198,22 @@ function playAlarmChime() {
     });
   } catch (e) {
     console.warn('Audio chime playback warning:', e);
+  }
+}
+
+/** Spoken voice reminder reading out the task name and time */
+function speakAlarmAnnouncement(taskTitle: string, timeStr: string) {
+  try {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const text = `Attention. It is ${timeStr}. Time for ${taskTitle}.`;
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 0.95;
+      utterance.pitch = 1.0;
+      window.speechSynthesis.speak(utterance);
+    }
+  } catch (e) {
+    console.warn('Speech synthesis warning:', e);
   }
 }
 
@@ -2012,6 +2031,7 @@ export default function App() {
 
     if (alarmMode === 'sound') {
       playAlarmChime();
+      speakAlarmAnnouncement(ev.title, fmt12(ev.hour, ev.minute));
     }
     triggerMobileVibration();
 
