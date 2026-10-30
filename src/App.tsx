@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { readFileText, type ParsedEvent } from './scheduleParser';
+import { readFileText } from './scheduleParser';
 import {
   extractScheduleWithAI,
   loadAISettings,
@@ -91,16 +91,6 @@ const IconVolume = ({ size = 14, className = '', style }: IconProps) => (
 const IconUser = ({ size = 14, className = '', style }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
-  </svg>
-);
-const IconMoon = ({ size = 14, className = '', style }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
-    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-  </svg>
-);
-const IconInfo = ({ size = 14, className = '', style }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
-    <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
   </svg>
 );
 const IconSparkles = ({ size = 14, className = '', style }: IconProps) => (
@@ -1287,10 +1277,10 @@ function EventModal({ event, onSave, onClose, onDelete }: {
 }
 
 // ─── Calendar ─────────────────────────────────────────────────────────────────
-function CalendarView({ events, setEvents, onOpenAlarmWithEvent, toast }: {
+function CalendarView({ events, setEvents, onOpenAlarmWithEvent: _onOpenAlarmWithEvent, toast }: {
   events: ScheduleEvent[];
   setEvents: React.Dispatch<React.SetStateAction<ScheduleEvent[]>>;
-  onOpenAlarmWithEvent: (ev: ScheduleEvent) => void;
+  onOpenAlarmWithEvent?: (ev: ScheduleEvent) => void;
   toast: (msg: string, type?: ToastMsg['type']) => void;
 }) {
   const [weekOffset, setWeekOffset] = useState(0);
@@ -1601,8 +1591,6 @@ function SettingsView({
   isInstalled: boolean;
   toast: (msg: string) => void;
 }) {
-  const [notifSound, setNotifSound] = useState(true);
-  const [focusMode, setFocusMode] = useState(false);
   const [snoozeDur, setSnoozeDur] = useState(5);
   const [username, setUsername] = useState(userProfile.name);
   const [department, setDepartment] = useState(userProfile.department);

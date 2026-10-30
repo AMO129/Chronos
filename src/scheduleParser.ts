@@ -105,7 +105,7 @@ export interface ParsedTime {
  *   In university and workplace timetables, classes are in the afternoon (13:00 - 18:00).
  *   5:00 is interpreted as 17:00 (5:00 PM), NOT 5:00 AM before sunrise!
  */
-export function parseTime(s: string, context?: { isEnd?: boolean; startHour?: number }): ParsedTime | null {
+export function parseTime(s: string, _context?: { isEnd?: boolean; startHour?: number }): ParsedTime | null {
   const clean = s.trim().toLowerCase();
   if (!clean) return null;
 
@@ -172,7 +172,6 @@ export function extractTimeRange(text: string): TimeRangeResult | null {
     const rawStart = matchRange[1];
     const rawEnd = matchRange[2];
     const hasPMInEnd = /pm/i.test(rawEnd);
-    const hasAMInEnd = /am/i.test(rawEnd);
 
     let start = parseTime(rawStart);
     let end = parseTime(rawEnd);
