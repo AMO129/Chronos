@@ -1,5 +1,12 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { parseScheduleFile, parseScheduleText, type ParsedEvent } from './scheduleParser';
+import { readFileText, type ParsedEvent } from './scheduleParser';
+import {
+  extractScheduleWithAI,
+  loadAISettings,
+  saveAISettings,
+  getLocalTimeZone,
+  type AISettings,
+} from './aiScheduleExtractor';
 
 // ─── SVG Icons ──────────────────────────────────────────────────────────────
 type IconProps = { size?: number; className?: string; style?: React.CSSProperties };
@@ -112,6 +119,16 @@ const IconDownload = ({ size = 14, className = '', style }: IconProps) => (
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
   </svg>
 );
+const IconCpu = ({ size = 14, className = '', style }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+    <rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/>
+  </svg>
+);
+const IconPhone = ({ size = 14, className = '', style }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+    <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/>
+  </svg>
+);
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type NavView = 'dashboard' | 'calendar' | 'alarms' | 'settings';
@@ -124,6 +141,7 @@ export interface UserProfile {
   year: string;
   role: string;
   email?: string;
+  phoneWebhook?: string;
   joinedAt: string;
 }
 
@@ -139,12 +157,6 @@ export interface ScheduleEvent {
   alarmEnabled: boolean;
 }
 
-interface ParsedBlock {
-  name: string;
-  time: string;
-  category: Category;
-}
-
 // ─── Helpers: Initials & Names ────────────────────────────────────────────────
 function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -158,7 +170,7 @@ function getFirstName(name: string): string {
   return name.trim().split(/\s+/)[0] || 'there';
 }
 
-// ─── Audio Chime & Desktop Notifications ──────────────────────────────────────
+// ─── Audio Chime, Vibration & Desktop / Mobile Notifications ──────────────────
 function playAlarmChime() {
   try {
     const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -166,7 +178,7 @@ function playAlarmChime() {
     const ctx = new AudioContextClass();
     const now = ctx.currentTime;
 
-    // Harmonic golden chime: D5, A5, D6
+    // Harmonic golden chime: D5 (587Hz), A5 (880Hz), D6 (1174Hz)
     const freqs = [587.33, 880.0, 1174.66];
     freqs.forEach((freq, idx) => {
       const osc = ctx.createOscillator();
@@ -186,76 +198,49 @@ function playAlarmChime() {
   }
 }
 
+function triggerMobileVibration() {
+  try {
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      navigator.vibrate([400, 200, 400, 200, 800]);
+    }
+  } catch (e) {
+    console.warn('Vibration not supported:', e);
+  }
+}
+
 function requestNotificationPermission() {
   if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission();
   }
 }
 
-function sendDesktopNotification(title: string, body: string) {
+function sendDesktopNotification(title: string, body: string, webhookUrl?: string) {
+  // 1. Browser / Mobile notification
   if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
     try {
-      new Notification(title, { body, icon: '/vite.svg' });
+      new Notification(title, { body, icon: '/chronos-icon.svg' });
     } catch (e) {
       console.warn('Notification warning:', e);
     }
   }
+
+  // 2. Mobile Webhook trigger (Pushover, Telegram bot, or Webhook alert)
+  if (webhookUrl && webhookUrl.trim().startsWith('http')) {
+    try {
+      fetch(webhookUrl.trim(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, message: body, timestamp: new Date().toISOString() }),
+        mode: 'no-cors',
+      }).catch(err => console.warn('Mobile alert webhook push failed:', err));
+    } catch (err) {
+      console.warn('Webhook dispatch error:', err);
+    }
+  }
 }
 
-// ─── Initial Sample Data ─────────────────────────────────────────────────────
-const INITIAL_EVENTS: ScheduleEvent[] = [
-  { id: 'e1',  day: 0, hour: 8,  minute: 0,  duration: 90,  title: 'Linear Algebra',   subtitle: 'MAT 301 — LT2',     category: 'academic',    alarmEnabled: true  },
-  { id: 'e2',  day: 0, hour: 10, minute: 0,  duration: 60,  title: 'Fajr Review',       subtitle: 'Quran & Hadith',     category: 'spiritual',   alarmEnabled: true  },
-  { id: 'e3',  day: 0, hour: 14, minute: 0,  duration: 120, title: 'DSP Lab',           subtitle: 'EEE 412 — Lab B',   category: 'engineering', alarmEnabled: false },
-  { id: 'e4',  day: 1, hour: 9,  minute: 0,  duration: 90,  title: 'Algorithms',        subtitle: 'CSC 302 — LT1',     category: 'academic',    alarmEnabled: true  },
-  { id: 'e5',  day: 1, hour: 13, minute: 0,  duration: 60,  title: 'Project Sync',      subtitle: 'Team Stand-up',      category: 'meeting',     alarmEnabled: true  },
-  { id: 'e6',  day: 1, hour: 16, minute: 0,  duration: 120, title: 'SEN 292 Review',    subtitle: '2 Hours Review',     category: 'engineering', alarmEnabled: true  },
-  { id: 'e7',  day: 2, hour: 8,  minute: 0,  duration: 60,  title: 'Morning Dhikr',     subtitle: 'Spiritual Routine',  category: 'spiritual',   alarmEnabled: true  },
-  { id: 'e8',  day: 2, hour: 11, minute: 0,  duration: 90,  title: 'Thermodynamics',    subtitle: 'PHY 305 — LT3',     category: 'academic',    alarmEnabled: false },
-  { id: 'e9',  day: 2, hour: 14, minute: 30, duration: 60,  title: 'Advisor Meeting',   subtitle: 'Office Hours',       category: 'meeting',     alarmEnabled: false },
-  { id: 'e10', day: 3, hour: 9,  minute: 30, duration: 90,  title: 'Control Systems',   subtitle: 'EEE 401 — LT2',     category: 'engineering', alarmEnabled: true  },
-  { id: 'e11', day: 3, hour: 12, minute: 0,  duration: 60,  title: "Jumu'ah",           subtitle: 'Friday Prayer',      category: 'spiritual',   alarmEnabled: true  },
-  { id: 'e12', day: 4, hour: 10, minute: 0,  duration: 90,  title: 'Data Structures',   subtitle: 'CSC 204 — LT1',     category: 'academic',    alarmEnabled: true  },
-  { id: 'e13', day: 4, hour: 15, minute: 0,  duration: 60,  title: 'Lab Report',        subtitle: 'EEE 412 Writeup',   category: 'engineering', alarmEnabled: false },
-  { id: 'e14', day: 5, hour: 9,  minute: 0,  duration: 60,  title: 'Quran Study',       subtitle: 'Weekend Session',    category: 'spiritual',   alarmEnabled: true  },
-  { id: 'e15', day: 5, hour: 11, minute: 0,  duration: 120, title: 'Group Project',     subtitle: 'EEE 412 Project',   category: 'meeting',     alarmEnabled: true  },
-  { id: 'e16', day: 6, hour: 10, minute: 0,  duration: 60,  title: 'Review Session',    subtitle: 'Exam Prep',          category: 'academic',    alarmEnabled: false },
-  { id: 'e17', day: 6, hour: 14, minute: 0,  duration: 90,  title: 'Circuit Design',    subtitle: 'Personal Project',   category: 'engineering', alarmEnabled: true  },
-];
-
-const DEFAULT_PARSED_PREVIEW: ParsedBlock[] = [
-  { name: 'Linear Algebra',  time: 'Mon · 8:00–9:30 AM',        category: 'academic'    },
-  { name: 'Fajr Review',     time: 'Daily · 6:00 AM',           category: 'spiritual'   },
-  { name: 'DSP Laboratory',  time: 'Mon, Wed · 2:00–4:00 PM',   category: 'engineering' },
-  { name: 'Project Sync',    time: 'Tue · 1:00 PM',             category: 'meeting'     },
-  { name: 'Quran & Hadith',  time: 'Sat–Sun · 9:00 AM',         category: 'spiritual'   },
-  { name: 'SEN 292 Review',  time: 'Tue · 4:00–6:00 PM',        category: 'engineering' },
-];
-
-const SAMPLE_SCHEDULE_TEXT = `# Engineering & Academic Master Timetable
-Monday
-  8:00 AM - 9:30 AM: Linear Algebra (MAT 301 - LT2)
-  10:00 AM - 11:00 AM: Fajr Review (Quran & Hadith Study)
-  2:00 PM - 4:00 PM: DSP Laboratory (EEE 412 - Lab B)
-
-Tuesday
-  9:00 AM - 10:30 AM: Algorithms & Computation (CSC 302 - LT1)
-  1:00 PM - 2:00 PM: Project Sync (Senior Engineering Stand-up)
-  4:00 PM - 6:00 PM: 2 Hours Review — SEN 292 (Embedded Systems)
-
-Wednesday
-  8:00 AM - 9:00 AM: Morning Dhikr & Meditation (Spiritual Routine)
-  11:00 AM - 12:30 PM: Thermodynamics (PHY 305 - LT3)
-  2:30 PM - 3:30 PM: Advisor Meeting (Office Hours)
-
-Thursday
-  9:30 AM - 11:00 AM: Control Systems (EEE 401 - LT2)
-  12:00 PM - 1:00 PM: Jumu'ah Prayer & Reflection
-
-Friday
-  10:00 AM - 11:30 AM: Advanced Data Structures (CSC 204 - LT1)
-  3:00 PM - 4:00 PM: Lab Report Writing (EEE 412 Lab Report)
-`;
+// ─── Clean Initial State (ZERO Placeholders) ──────────────────────────────────
+const INITIAL_EVENTS: ScheduleEvent[] = [];
 
 const CATEGORY_DOT_COLORS: Record<Category, string> = {
   academic:    '#4a6fa5',
@@ -267,7 +252,7 @@ const CATEGORY_DOT_COLORS: Record<Category, string> = {
 const DAYS  = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const HOURS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 
-let _nextId = 200;
+let _nextId = 1000;
 const newId = () => `e${_nextId++}`;
 
 // ─── Format Helpers ───────────────────────────────────────────────────────────
@@ -354,7 +339,7 @@ function ToastContainer({ toasts, dismiss }: { toasts: ToastMsg[]; dismiss: (id:
             fontSize: '13px', color: 'var(--text-primary)', fontWeight: 500,
             boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
             animation: 'fadeIn 0.2s ease',
-            maxWidth: '320px',
+            maxWidth: '340px',
           }}
         >
           <IconCheck size={14} style={{ color: t.type === 'success' ? 'var(--green)' : 'var(--gold)', flexShrink: 0 }} />
@@ -373,7 +358,7 @@ function useToast() {
   const push = useCallback((text: string, type: ToastMsg['type'] = 'success') => {
     const id = _toastId++;
     setToasts(p => [...p, { id, text, type }]);
-    setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 3400);
+    setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 4000);
   }, []);
   const dismiss = useCallback((id: number) => setToasts(p => p.filter(t => t.id !== id)), []);
   return { toasts, push, dismiss };
@@ -388,10 +373,11 @@ function SignUpView({
   initialData?: UserProfile | null;
 }) {
   const [name, setName] = useState(initialData?.name || '');
-  const [department, setDepartment] = useState(initialData?.department || 'Software & Electrical Engineering');
-  const [year, setYear] = useState(initialData?.year || 'Year 3');
+  const [department, setDepartment] = useState(initialData?.department || '');
+  const [year, setYear] = useState(initialData?.year || 'Year 1');
   const [email, setEmail] = useState(initialData?.email || '');
   const [error, setError] = useState('');
+  const userTimezone = getLocalTimeZone();
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -399,23 +385,15 @@ function SignUpView({
       setError('Please enter your full name');
       return;
     }
-    const role = `${department.trim()} · ${year}`;
+    const role = department.trim() ? `${department.trim()} · ${year}` : year;
     onSignUp({
       name: name.trim(),
-      department: department.trim(),
+      department: department.trim() || 'Schedule Master',
       year,
       role,
       email: email.trim(),
       joinedAt: initialData?.joinedAt || new Date().toISOString(),
     });
-  };
-
-  const handleQuickDemo = () => {
-    setName('Ayodeji Okonkwo');
-    setDepartment('Software & Electrical Engineering');
-    setYear('Year 3');
-    setEmail('ayodeji.okonkwo@chronos.edu');
-    setError('');
   };
 
   return (
@@ -431,30 +409,30 @@ function SignUpView({
               Chronos
             </div>
             <div style={{ fontSize: '11px', color: 'var(--gold)', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 600 }}>
-              Schedule & Alarms
+              AI Timetable & Precision Alarms
             </div>
           </div>
         </div>
 
         <div>
           <h2 style={{ fontFamily: 'Manrope, sans-serif', fontSize: '20px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '6px' }}>
-            {initialData ? 'Edit Profile' : 'Set Up Your Chronos Account'}
+            {initialData ? 'Edit Profile' : 'Create Your Chronos Account'}
           </h2>
           <p style={{ fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
-            Enter your details so Chronos can customize your timetable dashboard, greeting, and precision alarms.
+            Sign up below. Next, upload your schedule document and Chronos AI will automatically extract your timetable and activate your phone alarms.
           </p>
         </div>
 
         {/* Feature Highlights */}
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           <span className="signup-pill">
-            <IconZap size={11} style={{ color: 'var(--gold)' }} /> NLP Schedule Parsing
+            <IconCpu size={11} style={{ color: 'var(--gold)' }} /> LLM Schedule Extraction
           </span>
           <span className="signup-pill">
-            <IconVolume size={11} style={{ color: 'var(--blue)' }} /> Harmonic Chimes
+            <IconClock size={11} style={{ color: 'var(--blue)' }} /> {userTimezone}
           </span>
           <span className="signup-pill">
-            <IconCalendar size={11} style={{ color: 'var(--green)' }} /> 7-Day Grid
+            <IconPhone size={11} style={{ color: 'var(--green)' }} /> Phone Alarms & Alerts
           </span>
         </div>
 
@@ -463,7 +441,7 @@ function SignUpView({
             <label className="modal-label">Your Full Name *</label>
             <input
               className="modal-input"
-              placeholder="e.g. Ayodeji Okonkwo, Sarah Connor"
+              placeholder="e.g. John Doe, Sarah Smith"
               value={name}
               onChange={e => { setName(e.target.value); setError(''); }}
               autoFocus
@@ -473,16 +451,16 @@ function SignUpView({
 
           <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '10px' }}>
             <div>
-              <label className="modal-label">Major / Field</label>
+              <label className="modal-label">Major / Field / Profession</label>
               <input
                 className="modal-input"
-                placeholder="e.g. Electrical Engineering"
+                placeholder="e.g. Engineering, Medicine, Law"
                 value={department}
                 onChange={e => setDepartment(e.target.value)}
               />
             </div>
             <div>
-              <label className="modal-label">Year / Level</label>
+              <label className="modal-label">Level / Title</label>
               <select
                 className="modal-input"
                 value={year}
@@ -495,17 +473,17 @@ function SignUpView({
                 <option value="Year 4">Year 4</option>
                 <option value="Final Year">Final Year</option>
                 <option value="Postgraduate">Postgraduate</option>
-                <option value="Faculty / Engineer">Faculty / Engineer</option>
+                <option value="Professional">Professional</option>
               </select>
             </div>
           </div>
 
           <div>
-            <label className="modal-label">Academic Email (Optional)</label>
+            <label className="modal-label">Email Address (Optional)</label>
             <input
               type="email"
               className="modal-input"
-              placeholder="student@university.edu"
+              placeholder="user@example.com"
               value={email}
               onChange={e => setEmail(e.target.value)}
             />
@@ -518,21 +496,9 @@ function SignUpView({
               style={{ flex: 1, justifyContent: 'center', padding: '11px 16px', fontSize: '13px' }}
             >
               <IconCheck size={14} />
-              <span>{initialData ? 'Save Changes' : 'Enter Chronos Workspace →'}</span>
+              <span>{initialData ? 'Save Changes' : 'Start Workspace & Upload Schedule →'}</span>
             </button>
           </div>
-
-          {!initialData && (
-            <div style={{ textAlign: 'center', marginTop: '4px' }}>
-              <button
-                type="button"
-                onClick={handleQuickDemo}
-                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '11.5px', textDecoration: 'underline', cursor: 'pointer' }}
-              >
-                Or quick-fill demo student profile
-              </button>
-            </div>
-          )}
         </form>
       </div>
     </div>
@@ -548,6 +514,7 @@ function Sidebar({
   onOpenProfile,
   onInstallApp,
   isInstalled,
+  focusStreak,
 }: {
   view: NavView;
   setView: (v: NavView) => void;
@@ -556,6 +523,7 @@ function Sidebar({
   onOpenProfile: () => void;
   onInstallApp: () => void;
   isInstalled: boolean;
+  focusStreak: number;
 }) {
   return (
     <aside className="sidebar">
@@ -599,20 +567,20 @@ function Sidebar({
         </div>
       </nav>
 
-      {/* Streak */}
+      {/* Real Focus Streak */}
       <div className="sidebar-streak">
         <div className="streak-header">
           <span className="streak-label">Focus Streak</span>
           <IconZap size={13} style={{ color: 'var(--gold)' }} />
         </div>
-        <div className="streak-count">14</div>
-        <div className="streak-sub">days consecutive</div>
+        <div className="streak-count">{focusStreak}</div>
+        <div className="streak-sub">days active</div>
         <div className="streak-bar">
-          <div className="streak-fill" style={{ width: '78%' }} />
+          <div className="streak-fill" style={{ width: `${Math.min(100, Math.max(15, focusStreak * 14))}%` }} />
         </div>
       </div>
 
-      {/* Install App button (Desktop/Mobile) */}
+      {/* Install App Button */}
       {!isInstalled && (
         <div style={{ margin: '0 10px 10px' }}>
           <button
@@ -628,7 +596,7 @@ function Sidebar({
               color: 'var(--gold)',
               fontWeight: 600,
             }}
-            title="Install Chronos as a standalone desktop PC or mobile app"
+            title="Install Chronos as a standalone desktop PC or mobile application"
           >
             <IconDownload size={13} />
             <span>Install App (PC/Mobile)</span>
@@ -672,17 +640,19 @@ function Topbar({
     <div className="topbar">
       <div className="topbar-title">{title}</div>
       <div className="topbar-actions">
-        <button
-          onClick={onTestAlarm}
-          className="btn-outline"
-          style={{ padding: '4px 10px', fontSize: '11.5px', height: '30px' }}
-          title="Play alarm sound and trigger overlay"
-        >
-          <IconVolume size={13} style={{ color: 'var(--gold)' }} />
-          <span>Test Alarm</span>
-        </button>
+        {alarmCount > 0 && (
+          <button
+            onClick={onTestAlarm}
+            className="btn-outline"
+            style={{ padding: '4px 10px', fontSize: '11.5px', height: '30px' }}
+            title="Play alarm sound and trigger overlay"
+          >
+            <IconVolume size={13} style={{ color: 'var(--gold)' }} />
+            <span>Test Alarm</span>
+          </button>
+        )}
 
-        <div className="topbar-btn alarm-active" onClick={onOpenAlarm} title="Active Alarm" style={{ position: 'relative' }}>
+        <div className={`topbar-btn${alarmCount > 0 ? ' alarm-active' : ''}`} onClick={onOpenAlarm} title="Active Alarms" style={{ position: 'relative' }}>
           <IconBell size={15} />
           {alarmCount > 0 && (
             <span style={{
@@ -712,11 +682,13 @@ function Topbar({
 function Dropzone({
   file,
   setFile,
-  isParsing,
+  isProcessing,
+  processingStep,
 }: {
   file: File | null;
   setFile: (f: File | null) => void;
-  isParsing: boolean;
+  isProcessing: boolean;
+  processingStep: string;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
@@ -745,22 +717,28 @@ function Dropzone({
       onDragOver={e => { e.preventDefault(); setDrag(true); }}
       onDragLeave={() => setDrag(false)}
       onDrop={onDrop}
-      onClick={() => !file && inputRef.current?.click()}
+      onClick={() => !file && !isProcessing && inputRef.current?.click()}
     >
       <input ref={inputRef} type="file" accept=".docx,.md,.txt" style={{ display: 'none' }}
         onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])} />
 
       {file ? (
         <>
-          <button className="file-clear" onClick={e => { e.stopPropagation(); setFile(null); }}>
-            <IconX size={14} />
-          </button>
+          {!isProcessing && (
+            <button className="file-clear" onClick={e => { e.stopPropagation(); setFile(null); }}>
+              <IconX size={14} />
+            </button>
+          )}
           <div className="file-success">
-            <IconCheck size={22} className="file-success-icon" />
+            {isProcessing ? (
+              <IconCpu size={24} style={{ color: 'var(--gold)', animation: 'pulse-ring 1.5s infinite' }} />
+            ) : (
+              <IconCheck size={22} className="file-success-icon" />
+            )}
             <div>
               <div className="file-success-name">{file.name}</div>
               <div className="file-success-size">
-                {isParsing ? 'Analyzing schedule structure...' : `${fmtSize(file.size)} · Successfully parsed`}
+                {isProcessing ? processingStep : `${fmtSize(file.size)} · Automatically synced to calendar & alarms armed`}
               </div>
             </div>
           </div>
@@ -768,8 +746,8 @@ function Dropzone({
       ) : (
         <>
           <div className="dropzone-icon"><IconUpload size={28} /></div>
-          <div className="dropzone-title">Drop your schedule document here</div>
-          <div className="dropzone-sub">or click to browse (.docx, .md, .txt)</div>
+          <div className="dropzone-title">Upload your schedule document</div>
+          <div className="dropzone-sub">Click or drag & drop your timetable (.docx, .md, .txt)</div>
           <div className="dropzone-types">
             {accept.map(t => <span key={t} className="type-badge">{t}</span>)}
           </div>
@@ -799,6 +777,8 @@ function Dashboard({
   setAlarmMode,
   onOpenAlarmWithEvent,
   userProfile,
+  focusStreak,
+  completedIds,
   toast,
 }: {
   onViewCalendar: () => void;
@@ -808,12 +788,18 @@ function Dashboard({
   setAlarmMode: (m: AlarmMode) => void;
   onOpenAlarmWithEvent: (ev: ScheduleEvent) => void;
   userProfile: UserProfile;
+  focusStreak: number;
+  completedIds: Set<string>;
   toast: (msg: string, type?: ToastMsg['type']) => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
-  const [isParsing, setIsParsing] = useState(false);
-  const [parsedEvents, setParsedEvents] = useState<ParsedEvent[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingStep, setProcessingStep] = useState('');
+  const [pasteModalOpen, setPasteModalOpen] = useState(false);
+  const [pastedText, setPastedText] = useState('');
   const [now, setNow] = useState(new Date());
+
+  const userTimezone = getLocalTimeZone();
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -827,66 +813,87 @@ function Dashboard({
   const todayEvents = events.filter(e => e.day === todayIdx);
   const enabledAlarms = events.filter(e => e.alarmEnabled);
 
+  const completedTodayCount = todayEvents.filter(e => completedIds.has(e.id)).length;
+  const progressPercent = todayEvents.length > 0 ? Math.round((completedTodayCount / todayEvents.length) * 100) : 0;
+
   const hour = now.getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
   const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
-  // Handle file reading & smart schedule parsing
-  useEffect(() => {
-    if (!file) {
-      setParsedEvents([]);
-      return;
-    }
-    setIsParsing(true);
-    parseScheduleFile(file)
-      .then(result => {
-        setParsedEvents(result);
-        if (result.length > 0) {
-          toast(`Extracted ${result.length} recurring schedule blocks!`, 'success');
-        } else {
-          toast(`No schedule blocks detected in ${file.name}. Try format: "Mon 8:00 AM Linear Algebra"`, 'info');
-        }
-      })
-      .catch(err => {
-        console.error(err);
-        toast(`Error reading document: ${err.message}`, 'info');
-      })
-      .finally(() => setIsParsing(false));
-  }, [file, toast]);
+  // Handle schedule document upload and automatic extraction & placement
+  const processDocumentText = async (text: string, sourceName: string) => {
+    setIsProcessing(true);
+    setProcessingStep('Analyzing timetable structure with AI...');
+    try {
+      const aiSettings = loadAISettings();
+      setProcessingStep(`Extracting schedule & aligning to ${userTimezone}...`);
 
-  const handleLoadSample = () => {
-    const sample = parseScheduleText(SAMPLE_SCHEDULE_TEXT);
-    setParsedEvents(sample);
-    toast(`Loaded ${sample.length} blocks from sample engineering timetable!`, 'success');
+      const result = await extractScheduleWithAI(text, aiSettings);
+
+      if (result.events.length === 0) {
+        toast(`No schedule events found in ${sourceName}. Check your file formatting.`, 'info');
+        return;
+      }
+
+      setProcessingStep('Arming precision alarms and building calendar grid...');
+
+      // Convert to ScheduleEvent objects with alarmEnabled = true
+      const newScheduleEvents: ScheduleEvent[] = result.events.map(ev => ({
+        id: ev.id || newId(),
+        day: ev.day,
+        hour: ev.hour,
+        minute: ev.minute,
+        duration: ev.duration || 60,
+        title: ev.title,
+        subtitle: ev.subtitle || `${userTimezone} · Scheduled Block`,
+        category: ev.category,
+        alarmEnabled: true,
+      }));
+
+      // Automatically place on calendar & set up alarms!
+      setEvents(newScheduleEvents);
+      localStorage.setItem('chronos_events', JSON.stringify(newScheduleEvents));
+
+      // Trigger soft chime for confirmation
+      if (alarmMode === 'sound') {
+        playAlarmChime();
+      }
+
+      const engineLabel = result.source === 'gemini' ? 'Gemini AI' : result.source === 'openai' ? 'OpenAI' : 'Chronos AI Engine';
+      toast(`Extracted & placed ${newScheduleEvents.length} events on your calendar via ${engineLabel} with all alarms armed!`, 'success');
+    } catch (err: any) {
+      console.error('Schedule extraction error:', err);
+      toast(`AI Extraction Error: ${err.message || 'Failed to process document'}`, 'info');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
   };
 
-  const handleImport = (replace = false) => {
-    if (parsedEvents.length === 0) return;
-    const newItems: ScheduleEvent[] = parsedEvents.map(p => ({
-      id: p.id || newId(),
-      day: p.day,
-      hour: p.hour,
-      minute: p.minute,
-      duration: p.duration,
-      title: p.title,
-      subtitle: p.subtitle,
-      category: p.category,
-      alarmEnabled: true,
-    }));
-
-    if (replace) {
-      setEvents(newItems);
-      toast(`Replaced schedule with ${newItems.length} events and alarms set!`, 'success');
-    } else {
-      setEvents(prev => {
-        const existingKeys = new Set(prev.map(e => `${e.day}-${e.hour}:${e.minute}-${e.title.toLowerCase()}`));
-        const filteredNew = newItems.filter(e => !existingKeys.has(`${e.day}-${e.hour}:${e.minute}-${e.title.toLowerCase()}`));
-        return [...prev, ...filteredNew];
+  // Triggered when file state changes
+  useEffect(() => {
+    if (!file) return;
+    readFileText(file)
+      .then(text => processDocumentText(text, file.name))
+      .catch(err => {
+        console.error(err);
+        toast(`Could not read file: ${err.message}`, 'info');
       });
-      toast(`Imported ${newItems.length} events with alarms active!`, 'success');
-    }
-    if (alarmMode === 'sound') {
-      playAlarmChime();
+  }, [file]);
+
+  const handlePasteSubmit = () => {
+    if (!pastedText.trim()) return;
+    setPasteModalOpen(false);
+    processDocumentText(pastedText, 'Pasted Text');
+    setPastedText('');
+  };
+
+  const handleClearSchedule = () => {
+    if (confirm('Clear all schedule events and reset alarms?')) {
+      setEvents([]);
+      setFile(null);
+      localStorage.removeItem('chronos_events');
+      toast('Schedule cleared', 'info');
     }
   };
 
@@ -898,79 +905,111 @@ function Dashboard({
         <div className="card">
           <div className="dash-header">
             <div>
-              <div className="dash-date">{dateStr}</div>
+              <div className="dash-date">{dateStr} · {userTimezone}</div>
               <div className="dash-welcome">{greeting}, {getFirstName(userProfile.name)}</div>
               <div className="dash-sub">
-                {userProfile.department} · {todayEvents.length} scheduled events today · {enabledAlarms.length} alarms active
+                {userProfile.department} · {events.length === 0 ? 'Upload your schedule document below to start.' : `${todayEvents.length} scheduled events today · ${enabledAlarms.length} alarms armed`}
               </div>
             </div>
-            <button className="btn-gold" onClick={onViewCalendar}>
-              <IconCalendar size={13} />
-              View Schedule
-            </button>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {events.length > 0 && (
+                <button className="btn-outline" onClick={handleClearSchedule} style={{ color: '#e05252', borderColor: 'rgba(224,82,82,0.25)', fontSize: '12px' }}>
+                  <IconTrash size={12} /> Clear
+                </button>
+              )}
+              <button className="btn-gold" onClick={onViewCalendar}>
+                <IconCalendar size={13} />
+                View Schedule
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Quick stats */}
+        {/* Quick stats (No Placeholders) */}
         <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-          <StatCard label="Today's Events" value={todayEvents.length} sub="scheduled blocks" color="var(--gold)" />
-          <StatCard label="Active Alarms" value={enabledAlarms.length} sub="notifications on" color="#7baad4" />
-          <StatCard label="Focus Streak" value="14d" sub="78% to milestone" color="#b09de0" />
-          <StatCard label="Daily Goal" value="42%" sub="3 of 7 complete" color="#7ec49a" />
+          <StatCard
+            label="Today's Events"
+            value={todayEvents.length}
+            sub={events.length === 0 ? "No schedule loaded" : todayEvents.length === 1 ? "1 event today" : `${todayEvents.length} events today`}
+            color="var(--gold)"
+          />
+          <StatCard
+            label="Armed Alarms"
+            value={enabledAlarms.length}
+            sub={enabledAlarms.length === 0 ? "No active alarms" : `${enabledAlarms.length} reminders ready`}
+            color="#7baad4"
+          />
+          <StatCard
+            label="Focus Streak"
+            value={`${focusStreak}d`}
+            sub="days active"
+            color="#b09de0"
+          />
+          <StatCard
+            label="Daily Progress"
+            value={todayEvents.length > 0 ? `${progressPercent}%` : "0%"}
+            sub={todayEvents.length > 0 ? `${completedTodayCount}/${todayEvents.length} complete` : "No events today"}
+            color="#7ec49a"
+          />
         </div>
 
         {/* Dropzone */}
         <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-            <div className="card-title" style={{ marginBottom: 0 }}>Upload Schedule Document</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+            <div>
+              <div className="card-title" style={{ marginBottom: 0 }}>Upload Schedule Document</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                AI auto-extracts your timetable and arms all alarms automatically.
+              </div>
+            </div>
             <button
-              onClick={handleLoadSample}
+              onClick={() => setPasteModalOpen(true)}
               className="btn-outline"
-              style={{ fontSize: '11px', padding: '3px 8px' }}
-              title="Quick test without a local file"
+              style={{ fontSize: '11px', padding: '4px 10px' }}
+              title="Paste your timetable text directly"
             >
               <IconSparkles size={12} style={{ color: 'var(--gold)' }} />
-              <span>Load Sample Timetable</span>
+              <span>Paste Schedule Text</span>
             </button>
           </div>
-          <Dropzone file={file} setFile={setFile} isParsing={isParsing} />
+
+          <Dropzone
+            file={file}
+            setFile={setFile}
+            isProcessing={isProcessing}
+            processingStep={processingStep}
+          />
         </div>
 
-        {/* Schedule Parser card */}
+        {/* Extracted Schedule Card */}
         <div className="card">
           <div className="parser-header">
             <div className="parser-dot" />
-            <div className="parser-title">Active Schedule Parser</div>
+            <div className="parser-title">Active Schedule & Timetable</div>
             <span className="parser-status">
-              {isParsing ? 'Parsing...' : parsedEvents.length > 0 ? `${parsedEvents.length} Blocks Ready` : 'Ready'}
+              {isProcessing ? 'AI Processing...' : events.length > 0 ? `${events.length} Events Active` : 'No Schedule'}
             </span>
           </div>
 
-          {parsedEvents.length > 0 ? (
+          {events.length > 0 ? (
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
                 <span style={{ fontSize: '12.5px', color: 'var(--text-secondary)' }}>
-                  Detected <strong style={{ color: 'var(--gold)' }}>{parsedEvents.length} recurring blocks</strong> with alarm triggers:
+                  Current timetable placed in your calendar ({events.length} blocks):
                 </span>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button className="btn-gold" onClick={() => handleImport(false)} style={{ padding: '6px 12px' }}>
-                    <IconZap size={13} />
-                    Import & Set {parsedEvents.length} Alarms
-                  </button>
-                  <button className="btn-outline" onClick={() => handleImport(true)} style={{ padding: '6px 10px', fontSize: '11.5px' }}>
-                    Replace Schedule
-                  </button>
-                </div>
+                <span style={{ fontSize: '11px', color: 'var(--gold)', fontWeight: 600 }}>
+                  All Alarms Armed
+                </span>
               </div>
 
               <div className="parsed-list">
-                {parsedEvents.map((b, i) => (
-                  <div key={b.id || i} className="parsed-item">
+                {events.map((b) => (
+                  <div key={b.id} className="parsed-item">
                     <div className="parsed-item-dot" style={{ background: CATEGORY_DOT_COLORS[b.category] }} />
                     <div className="parsed-item-info">
                       <div className="parsed-item-name">{b.title}</div>
                       <div className="parsed-item-time">
-                        {DAYS[b.day]} · {fmt12(b.hour, b.minute)} ({b.duration} min) · {b.subtitle}
+                        {DAYS[b.day]} · {fmt12(b.hour, b.minute)} ({b.duration} min) {b.subtitle ? `· ${b.subtitle}` : ''}
                       </div>
                     </div>
                     <CatTag category={b.category} />
@@ -979,17 +1018,17 @@ function Dashboard({
               </div>
             </div>
           ) : (
-            <div className="parsed-list">
-              {DEFAULT_PARSED_PREVIEW.map((b, i) => (
-                <div key={i} className="parsed-item">
-                  <div className="parsed-item-dot" style={{ background: CATEGORY_DOT_COLORS[b.category] }} />
-                  <div className="parsed-item-info">
-                    <div className="parsed-item-name">{b.name}</div>
-                    <div className="parsed-item-time">{b.time}</div>
-                  </div>
-                  <CatTag category={b.category} />
-                </div>
-              ))}
+            <div style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-muted)' }}>
+              <div style={{ width: 44, height: 44, borderRadius: '50%', background: 'rgba(212,175,55,0.08)', margin: '0 auto 12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <IconCpu size={22} style={{ color: 'var(--gold)' }} />
+              </div>
+              <div style={{ fontSize: '13.5px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
+                Your Schedule is Empty
+              </div>
+              <div style={{ fontSize: '12px', maxWidth: '380px', margin: '0 auto', lineHeight: '1.5' }}>
+                Upload your course syllabus, class timetable, or schedule document (.docx, .txt, .md) above.
+                Chronos AI will automatically extract your classes and set alarms for your local time.
+              </div>
             </div>
           )}
         </div>
@@ -1029,8 +1068,8 @@ function Dashboard({
           ))}
 
           {upcomingAlarms.length === 0 && (
-            <div style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', padding: '14px 0' }}>
-              No upcoming alarms enabled.
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0', lineHeight: '1.4' }}>
+              No upcoming alarms.<br/>Upload your timetable to arm alerts.
             </div>
           )}
         </div>
@@ -1044,32 +1083,68 @@ function Dashboard({
           </div>
         </div>
 
-        {/* Progress */}
+        {/* Real Daily Progress */}
         <div className="progress-section">
           <div className="progress-label">Daily Progress</div>
           <div className="progress-bar-wrap">
-            <div className="progress-fill" style={{ width: '42%' }} />
+            <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
           </div>
           <div className="progress-stats">
-            <span>3 of 7 complete</span>
-            <span>42%</span>
+            <span>{todayEvents.length > 0 ? `${completedTodayCount} of ${todayEvents.length} complete` : 'No events today'}</span>
+            <span>{progressPercent}%</span>
           </div>
         </div>
 
         {/* Category legend */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <div style={{ fontSize: '10.5px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '2px' }}>Categories</div>
-          {(['academic', 'spiritual', 'engineering', 'meeting'] as Category[]).map(c => (
-            <div key={c} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: CATEGORY_DOT_COLORS[c], flexShrink: 0 }} />
-              <span style={{ fontSize: '12px', color: 'var(--text-secondary)', textTransform: 'capitalize', flex: 1 }}>{c}</span>
-              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                {events.filter(e => e.category === c).length}
-              </span>
-            </div>
-          ))}
+          {(['academic', 'spiritual', 'engineering', 'meeting'] as Category[]).map(c => {
+            const count = events.filter(e => e.category === c).length;
+            return (
+              <div key={c} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: CATEGORY_DOT_COLORS[c], flexShrink: 0 }} />
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)', textTransform: 'capitalize', flex: 1 }}>{c}</span>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{count}</span>
+              </div>
+            );
+          })}
         </div>
       </div>
+
+      {/* Paste Modal */}
+      {pasteModalOpen && (
+        <div className="modal-backdrop fade-in" onClick={e => e.target === e.currentTarget && setPasteModalOpen(false)}>
+          <div className="modal-box" style={{ maxWidth: '520px' }}>
+            <div className="modal-row">
+              <div className="modal-title">Paste Schedule / Syllabus Text</div>
+              <button className="modal-close" onClick={() => setPasteModalOpen(false)}><IconX size={16} /></button>
+            </div>
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+              Paste your raw schedule, syllabus dates, or class timetable below. Chronos AI will extract the events and arm alarms.
+            </p>
+            <textarea
+              className="modal-input"
+              rows={8}
+              placeholder="e.g.&#10;Monday&#10;9:00 AM - 10:30 AM: Machine Learning (LT1)&#10;2:00 PM: Project Meeting&#10;&#10;Tuesday 11:00 AM: Physics Lab"
+              value={pastedText}
+              onChange={e => setPastedText(e.target.value)}
+              style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: '12px' }}
+              autoFocus
+            />
+            <div className="modal-actions">
+              <button className="btn-outline" onClick={() => setPasteModalOpen(false)}>Cancel</button>
+              <button
+                className="btn-gold"
+                onClick={handlePasteSubmit}
+                disabled={!pastedText.trim()}
+                style={{ opacity: pastedText.trim() ? 1 : 0.5 }}
+              >
+                <IconZap size={13} /> Extract & Set Alarms
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1119,7 +1194,7 @@ function EventModal({ event, onSave, onClose, onDelete }: {
         {/* Subtitle */}
         <div className="modal-section">
           <label className="modal-label">Subtitle / Location</label>
-          <input className="modal-input" placeholder="e.g. LT2, Lab B, Zoom"
+          <input className="modal-input" placeholder="e.g. Room 204, Zoom, Office"
             value={draft.subtitle} onChange={e => setDraft(d => ({ ...d, subtitle: e.target.value }))} />
         </div>
 
@@ -1143,7 +1218,7 @@ function EventModal({ event, onSave, onClose, onDelete }: {
             <label className="modal-label">Duration</label>
             <select className="modal-input" style={{ cursor: 'pointer' }}
               value={draft.duration} onChange={e => setDraft(d => ({ ...d, duration: +e.target.value }))}>
-              {[30, 60, 90, 120, 150, 180].map(v => (
+              {[30, 45, 60, 90, 120, 150, 180].map(v => (
                 <option key={v} value={v}>{v < 60 ? `${v} min` : `${v / 60}h${v % 60 ? ` ${v % 60}m` : ''}`}</option>
               ))}
             </select>
@@ -1257,15 +1332,11 @@ function CalendarView({ events, setEvents, onOpenAlarmWithEvent, toast }: {
         </div>
       </div>
 
-      {/* Category legend strip */}
-      <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
-        {(['academic', 'spiritual', 'engineering', 'meeting'] as Category[]).map(c => (
-          <div key={c} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: CATEGORY_DOT_COLORS[c] }} />
-            <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'capitalize' }}>{c}</span>
-          </div>
-        ))}
-      </div>
+      {events.length === 0 && (
+        <div style={{ padding: '12px 16px', background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontSize: '12.5px', color: 'var(--text-muted)' }}>
+          Your calendar is currently empty. Upload your schedule document on the Dashboard or click "+ Add Event" above to add items.
+        </div>
+      )}
 
       {/* Week grid */}
       {calView === 'week' && (
@@ -1298,7 +1369,7 @@ function CalendarView({ events, setEvents, onOpenAlarmWithEvent, toast }: {
                               </span>
                             )}
                           </div>
-                          <div className="sched-card-sub">{ev.subtitle}</div>
+                          {ev.subtitle && <div className="sched-card-sub">{ev.subtitle}</div>}
                         </div>
                       ))}
                     </div>
@@ -1426,7 +1497,7 @@ function AlarmsView({ events, setEvents, onOpenAlarmWithEvent, toast }: {
       <div className="parsed-item-dot" style={{ width: 9, height: 9, borderRadius: '50%', background: CATEGORY_DOT_COLORS[ev.category], flexShrink: 0 }} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ev.title}</div>
-        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{DAYS[ev.day]} · {fmt12(ev.hour, ev.minute)} · {ev.subtitle}</div>
+        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{DAYS[ev.day]} · {fmt12(ev.hour, ev.minute)} {ev.subtitle ? `· ${ev.subtitle}` : ''}</div>
       </div>
       <CatTag category={ev.category} />
       <button
@@ -1472,7 +1543,9 @@ function AlarmsView({ events, setEvents, onOpenAlarmWithEvent, toast }: {
           <span style={{ marginLeft: 'auto', fontFamily: 'Manrope, sans-serif', fontSize: '13px', fontWeight: 700, color: 'var(--gold)' }}>{alarmed.length}</span>
         </div>
         {alarmed.length === 0 ? (
-          <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>No alarms enabled.</div>
+          <div style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '12px 0' }}>
+            No alarms armed. Upload your schedule document on Dashboard to set up alarms.
+          </div>
         ) : alarmed.map(ev => <AlarmRow key={ev.id} ev={ev} />)}
       </div>
 
@@ -1515,6 +1588,12 @@ function SettingsView({
   const [username, setUsername] = useState(userProfile.name);
   const [department, setDepartment] = useState(userProfile.department);
   const [year, setYear] = useState(userProfile.year);
+  const [phoneWebhook, setPhoneWebhook] = useState(userProfile.phoneWebhook || '');
+
+  // AI LLM Extractor Settings
+  const [aiSettings, setAiSettings] = useState<AISettings>(loadAISettings);
+
+  const userTimezone = getLocalTimeZone();
 
   const SettingsSection = ({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) => (
     <div className="card" style={{ marginBottom: 0 }}>
@@ -1543,33 +1622,41 @@ function SettingsView({
       name: username.trim(),
       department: department.trim(),
       year,
-      role: `${department.trim()} · ${year}`,
+      role: department.trim() ? `${department.trim()} · ${year}` : year,
+      phoneWebhook: phoneWebhook.trim(),
     };
     onUpdateProfile(updated);
     toast('Profile updated successfully');
   };
 
+  const handleSaveAI = () => {
+    saveAISettings(aiSettings);
+    toast('AI LLM extractor settings saved');
+  };
+
   const handleTestChime = () => {
     playAlarmChime();
-    toast('Playing gold chime sound');
+    triggerMobileVibration();
+    toast('Playing golden chime & mobile vibration');
   };
 
   return (
     <div className="col-main" style={{ paddingTop: 22, maxWidth: '640px' }}>
+      {/* User Profile */}
       <SettingsSection title="User Profile" icon={<IconUser size={15} />}>
-        <Row label="Full Name" sub="Displayed across Chronos greetings & badges"
+        <Row label="Full Name" sub="Displayed across greetings & badges"
           right={
             <input className="modal-input" style={{ maxWidth: '220px' }} value={username}
               onChange={e => setUsername(e.target.value)}
               onBlur={handleSaveProfile} />
           } />
-        <Row label="Major / Department" sub="Your field of study or focus area"
+        <Row label="Major / Field" sub="Your focus area or program"
           right={
             <input className="modal-input" style={{ maxWidth: '220px' }} value={department}
               onChange={e => setDepartment(e.target.value)}
               onBlur={handleSaveProfile} />
           } />
-        <Row label="Year / Level" sub="Academic progression level"
+        <Row label="Level / Title" sub="Progression level"
           right={
             <select
               className="modal-input"
@@ -1580,10 +1667,10 @@ function SettingsView({
                 const updated: UserProfile = {
                   ...userProfile,
                   year: e.target.value,
-                  role: `${department} · ${e.target.value}`,
+                  role: department.trim() ? `${department} · ${e.target.value}` : e.target.value,
                 };
                 onUpdateProfile(updated);
-                toast('Year updated');
+                toast('Level updated');
               }}
             >
               <option value="Year 1">Year 1</option>
@@ -1592,7 +1679,7 @@ function SettingsView({
               <option value="Year 4">Year 4</option>
               <option value="Final Year">Final Year</option>
               <option value="Postgraduate">Postgraduate</option>
-              <option value="Faculty / Engineer">Faculty / Engineer</option>
+              <option value="Professional">Professional</option>
             </select>
           } />
 
@@ -1604,6 +1691,118 @@ function SettingsView({
         </div>
       </SettingsSection>
 
+      {/* AI LLM Schedule Extractor Engine */}
+      <SettingsSection title="AI LLM Schedule Extraction Engine" icon={<IconCpu size={15} />}>
+        <Row
+          label="AI Model Engine"
+          sub="Select the LLM that parses your timetable files"
+          right={
+            <select
+              className="modal-input"
+              style={{ width: '170px', cursor: 'pointer' }}
+              value={aiSettings.provider}
+              onChange={e => setAiSettings(s => ({ ...s, provider: e.target.value as any }))}
+            >
+              <option value="auto">Auto / Local AI</option>
+              <option value="gemini">Google Gemini API</option>
+              <option value="openai">OpenAI / OpenRouter</option>
+            </select>
+          }
+        />
+
+        {aiSettings.provider === 'gemini' && (
+          <div>
+            <label className="modal-label">Google Gemini API Key</label>
+            <input
+              type="password"
+              className="modal-input"
+              placeholder="AIzaSy..."
+              value={aiSettings.apiKey || ''}
+              onChange={e => setAiSettings(s => ({ ...s, apiKey: e.target.value }))}
+            />
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+              Used to send your raw timetable document to Gemini 1.5 Flash for high-accuracy parsing into calendar slots.
+            </div>
+          </div>
+        )}
+
+        {aiSettings.provider === 'openai' && (
+          <div>
+            <label className="modal-label">OpenAI / OpenRouter API Key</label>
+            <input
+              type="password"
+              className="modal-input"
+              placeholder="sk-..."
+              value={aiSettings.apiKey || ''}
+              onChange={e => setAiSettings(s => ({ ...s, apiKey: e.target.value }))}
+            />
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
+            Timezone: <strong style={{ color: 'var(--gold)' }}>{userTimezone}</strong>
+          </span>
+          <button className="btn-gold" onClick={handleSaveAI} style={{ padding: '6px 14px' }}>
+            <IconCheck size={13} /> Save AI Settings
+          </button>
+        </div>
+      </SettingsSection>
+
+      {/* Alarms, Phone Vibrations & Notifications */}
+      <SettingsSection title="Phone Alarms & Notifications" icon={<IconBell size={15} />}>
+        <Row label="Alarm Mode" sub="How alarms are delivered"
+          right={
+            <div className="segmented" style={{ width: 'auto' }}>
+              <button className={`seg-btn${alarmMode === 'sound' ? ' active' : ''}`}
+                onClick={() => { setAlarmMode('sound'); toast('Alarm mode: Sound + Popup'); }} style={{ padding: '4px 10px' }}>
+                Sound + Popup
+              </button>
+              <button className={`seg-btn${alarmMode === 'popup' ? ' active' : ''}`}
+                onClick={() => { setAlarmMode('popup'); toast('Alarm mode: Popup Only'); }} style={{ padding: '4px 10px' }}>
+                Popup Only
+              </button>
+            </div>
+          } />
+
+        <Row label="Test Chime & Vibration" sub="Verify Web Audio API chime and phone vibration"
+          right={
+            <button className="btn-outline" onClick={handleTestChime} style={{ padding: '4px 10px' }}>
+              <IconVolume size={13} /> Test Sound
+            </button>
+          } />
+
+        <Row label="Desktop / Mobile OS Alerts" sub="Native alerts when phone/laptop tab is in background"
+          right={
+            <button className="btn-outline" onClick={() => { requestNotificationPermission(); toast('Notification permission requested'); }} style={{ padding: '4px 10px' }}>
+              Enable Alerts
+            </button>
+          } />
+
+        <div>
+          <label className="modal-label">Mobile Webhook Alert URL (Optional)</label>
+          <input
+            className="modal-input"
+            placeholder="https://api.pushover.net/... or webhook URL"
+            value={phoneWebhook}
+            onChange={e => setPhoneWebhook(e.target.value)}
+            onBlur={handleSaveProfile}
+          />
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+            Trigger real-time push alerts to your phone via Pushover, Telegram, or custom webhook when alarms ring.
+          </div>
+        </div>
+
+        <Row label="Snooze Duration" sub="Minutes to delay when snoozed"
+          right={
+            <select className="modal-input" style={{ width: '100px', cursor: 'pointer' }}
+              value={snoozeDur} onChange={e => { setSnoozeDur(+e.target.value); toast('Preference saved'); }}>
+              {[5, 10, 15, 20, 30].map(v => <option key={v} value={v}>{v} minutes</option>)}
+            </select>
+          } />
+      </SettingsSection>
+
+      {/* Native App & Cloud Deployment */}
       <SettingsSection title="Native App & Cloud Deployment" icon={<IconDownload size={15} />}>
         <Row
           label="Standalone Desktop & Mobile App"
@@ -1636,69 +1835,6 @@ function SettingsView({
           </div>
         </div>
       </SettingsSection>
-
-      <SettingsSection title="Alarms & Notifications" icon={<IconBell size={15} />}>
-        <Row label="Alarm Mode" sub="How alarms are delivered"
-          right={
-            <div className="segmented" style={{ width: 'auto' }}>
-              <button className={`seg-btn${alarmMode === 'sound' ? ' active' : ''}`}
-                onClick={() => { setAlarmMode('sound'); toast('Alarm mode: Sound + Popup'); }} style={{ padding: '4px 10px' }}>
-                Sound + Popup
-              </button>
-              <button className={`seg-btn${alarmMode === 'popup' ? ' active' : ''}`}
-                onClick={() => { setAlarmMode('popup'); toast('Alarm mode: Popup Only'); }} style={{ padding: '4px 10px' }}>
-                Popup Only
-              </button>
-            </div>
-          } />
-        <Row label="Test Chime Sound" sub="Verify Web Audio API chime"
-          right={
-            <button className="btn-outline" onClick={handleTestChime} style={{ padding: '4px 10px' }}>
-              <IconVolume size={13} /> Play Sound
-            </button>
-          } />
-        <Row label="Desktop Notifications" sub="Native OS reminders when tab is in background"
-          right={
-            <button className="btn-outline" onClick={() => { requestNotificationPermission(); toast('Notification permission requested'); }} style={{ padding: '4px 10px' }}>
-              Enable OS Alerts
-            </button>
-          } />
-        <Row label="Notification Sound" sub="Play chime when alarm fires"
-          right={
-            <div className={`toggle${notifSound ? ' on' : ''}`} onClick={() => { setNotifSound(s => !s); toast('Preference saved'); }}>
-              <div className="toggle-thumb" />
-            </div>
-          } />
-        <Row label="Snooze Duration" sub="Minutes to delay when snoozed"
-          right={
-            <select className="modal-input" style={{ width: '100px', cursor: 'pointer' }}
-              value={snoozeDur} onChange={e => { setSnoozeDur(+e.target.value); toast('Preference saved'); }}>
-              {[5, 10, 15, 20, 30].map(v => <option key={v} value={v}>{v} minutes</option>)}
-            </select>
-          } />
-      </SettingsSection>
-
-      <SettingsSection title="Focus Mode" icon={<IconMoon size={15} />}>
-        <Row label="Enable Focus Mode" sub="Suppress non-alarm notifications during study sessions"
-          right={
-            <div className={`toggle${focusMode ? ' on' : ''}`} onClick={() => { setFocusMode(s => !s); toast('Focus mode ' + (!focusMode ? 'enabled' : 'disabled')); }}>
-              <div className="toggle-thumb" />
-            </div>
-          } />
-      </SettingsSection>
-
-      <SettingsSection title="About" icon={<IconInfo size={15} />}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: '12.5px', color: 'var(--text-secondary)' }}>Version</span>
-            <span style={{ fontSize: '12.5px', color: 'var(--text-muted)', fontFamily: 'Manrope, sans-serif', fontWeight: 600 }}>1.2.0 (User Profile System)</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: '12.5px', color: 'var(--text-secondary)' }}>Engine</span>
-            <span style={{ fontSize: '12.5px', color: 'var(--text-muted)', fontFamily: 'Manrope, sans-serif', fontWeight: 600 }}>Chronos NLP Schedule Parser</span>
-          </div>
-        </div>
-      </SettingsSection>
     </div>
   );
 }
@@ -1728,11 +1864,11 @@ function AlarmOverlay({
     onSnooze(5);
   };
 
-  const title = event?.title || '2 Hours Review — SEN 292';
-  const subtitle = event?.subtitle || 'Engineering Schedule Block';
-  const category = event?.category || 'engineering';
-  const timeStr = event ? fmt12(event.hour, event.minute) : '4:00 PM';
-  const durationStr = event ? `${event.duration} min scheduled` : 'Remaining: 1 hr 58 min';
+  const title = event?.title || 'Scheduled Event';
+  const subtitle = event?.subtitle || 'Active Alarm Reminder';
+  const category = event?.category || 'academic';
+  const timeStr = event ? fmt12(event.hour, event.minute) : 'Alarm Due';
+  const durationStr = event ? `${event.duration} min scheduled block` : 'Notification';
   const nextRingTime = new Date(Date.now() + 5 * 60 * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   return (
@@ -1786,6 +1922,16 @@ export default function App() {
   const [alarmOpen, setAlarmOpen]   = useState(false);
   const [activeAlarmEvent, setActiveAlarmEvent] = useState<ScheduleEvent | null>(null);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [completedIds, setCompletedIds] = useState<Set<string>>(new Set());
+
+  // Focus streak tracking
+  const [focusStreak] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('chronos_focus_streak');
+      if (saved) return parseInt(saved, 10);
+    } catch {}
+    return 1;
+  });
 
   // PWA App Installation hook
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -1823,7 +1969,7 @@ export default function App() {
     return null;
   });
 
-  // Schedule Events state
+  // Schedule Events state (Clean, no placeholders!)
   const [events, setEvents] = useState<ScheduleEvent[]>(() => {
     try {
       const saved = localStorage.getItem('chronos_events');
@@ -1863,11 +2009,18 @@ export default function App() {
   const triggerAlarm = useCallback((ev: ScheduleEvent) => {
     setActiveAlarmEvent(ev);
     setAlarmOpen(true);
+
     if (alarmMode === 'sound') {
       playAlarmChime();
     }
-    sendDesktopNotification(`Chronos Alarm: ${ev.title}`, `${fmt12(ev.hour, ev.minute)} · ${ev.subtitle || 'Scheduled Block'}`);
-  }, [alarmMode]);
+    triggerMobileVibration();
+
+    sendDesktopNotification(
+      `Chronos Alarm: ${ev.title}`,
+      `${fmt12(ev.hour, ev.minute)} · ${ev.subtitle || 'Scheduled Event'}`,
+      userProfile?.phoneWebhook
+    );
+  }, [alarmMode, userProfile]);
 
   const lastFiredMinute = useRef<string>('');
   useEffect(() => {
@@ -1901,18 +2054,18 @@ export default function App() {
 
   const handleTestAlarm = () => {
     const sampleEvent = events.find(e => e.alarmEnabled) || events[0] || {
-      id: 'test', day: 1, hour: 16, minute: 0, duration: 120,
-      title: '2 Hours Review — SEN 292', subtitle: 'Engineering Review',
-      category: 'engineering', alarmEnabled: true,
+      id: 'test', day: (new Date().getDay() + 6) % 7, hour: new Date().getHours(), minute: new Date().getMinutes(), duration: 60,
+      title: 'Active Schedule Reminder', subtitle: 'Chronos Precision Alarm',
+      category: 'academic', alarmEnabled: true,
     };
     triggerAlarm(sampleEvent);
-    toast('Test alarm triggered! Chime ringing & overlay active.');
+    toast('Test alarm triggered! Chime ringing, vibration active & overlay displayed.');
   };
 
   const handleSignUpComplete = (profile: UserProfile) => {
     setUserProfile(profile);
     setIsEditingProfile(false);
-    toast(`Welcome to Chronos, ${getFirstName(profile.name)}!`);
+    toast(`Welcome to Chronos, ${getFirstName(profile.name)}! Please upload your schedule document.`);
   };
 
   const handleSignOut = () => {
@@ -1958,6 +2111,7 @@ export default function App() {
         onOpenProfile={() => setIsEditingProfile(true)}
         onInstallApp={handleInstallApp}
         isInstalled={isInstalled}
+        focusStreak={focusStreak}
       />
 
       <div className="main-area">
@@ -1986,6 +2140,8 @@ export default function App() {
               setAlarmOpen(true);
             }}
             userProfile={userProfile}
+            focusStreak={focusStreak}
+            completedIds={completedIds}
             toast={toast}
           />
         )}
@@ -2031,7 +2187,12 @@ export default function App() {
       {alarmOpen && (
         <AlarmOverlay
           event={activeAlarmEvent}
-          onClose={() => setAlarmOpen(false)}
+          onClose={() => {
+            if (activeAlarmEvent) {
+              setCompletedIds(prev => new Set([...prev, activeAlarmEvent.id]));
+            }
+            setAlarmOpen(false);
+          }}
           onSnooze={mins => {
             toast(`Snoozed "${activeAlarmEvent?.title || 'Alarm'}" for ${mins} minutes`);
           }}
