@@ -568,8 +568,59 @@ export interface FileReadResult {
   events?: ParsedEvent[];
 }
 
+/**
+ * Extract text from PDF preserving row and column layout
+ */
+export async function extractTextFromPdf(arrayBuffer: ArrayBuffer): Promise<string> {
+  const pdfjsLib = await import('pdfjs-dist');
+  if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+  }
+
+  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) });
+  const pdf = await loadingTask.promise;
+  let fullText = '';
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const textContent = await page.getTextContent();
+
+    const items = textContent.items as Array<{ str?: string; transform?: number[] }>;
+    const rows: Record<number, Array<{ x: number; text: string }>> = {};
+
+    for (const item of items) {
+      if (!item.str || !item.transform) continue;
+      const x = Math.round(item.transform[4]);
+      const y = Math.round(item.transform[5]);
+      let matchedY = Object.keys(rows).map(Number).find(ry => Math.abs(ry - y) <= 6);
+      if (matchedY === undefined) {
+        matchedY = y;
+        rows[matchedY] = [];
+      }
+      rows[matchedY].push({ x, text: item.str });
+    }
+
+    const sortedY = Object.keys(rows).map(Number).sort((a, b) => b - a);
+    for (const y of sortedY) {
+      const rowItems = rows[y].sort((a, b) => a.x - b.x);
+      const line = rowItems.map(i => i.text).join('   ').trim();
+      if (line) {
+        fullText += line + '\n';
+      }
+    }
+    fullText += '\n';
+  }
+
+  return fullText;
+}
+
 export async function readFileText(file: File): Promise<string> {
   const ext = (file.name.split('.').pop() ?? '').toLowerCase();
+
+  if (ext === 'pdf') {
+    const arrayBuffer = await file.arrayBuffer();
+    return await extractTextFromPdf(arrayBuffer);
+  }
 
   if (ext === 'docx') {
     const arrayBuffer = await file.arrayBuffer();

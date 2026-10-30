@@ -702,7 +702,7 @@ function Dropzone({
   const inputRef = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
 
-  const accept = ['.docx', '.md', '.txt'];
+  const accept = ['.pdf', '.docx', '.md', '.txt'];
 
   const handleFile = (f: File) => {
     const ext = '.' + (f.name.split('.').pop() ?? '').toLowerCase();
@@ -728,7 +728,7 @@ function Dropzone({
       onDrop={onDrop}
       onClick={() => !file && !isProcessing && inputRef.current?.click()}
     >
-      <input ref={inputRef} type="file" accept=".docx,.md,.txt" style={{ display: 'none' }}
+      <input ref={inputRef} type="file" accept=".pdf,.docx,.md,.txt" style={{ display: 'none' }}
         onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])} />
 
       {file ? (
@@ -756,7 +756,7 @@ function Dropzone({
         <>
           <div className="dropzone-icon"><IconUpload size={28} /></div>
           <div className="dropzone-title">Upload your schedule document</div>
-          <div className="dropzone-sub">Click or drag & drop your timetable (.docx, .md, .txt)</div>
+          <div className="dropzone-sub">Click or drag & drop your timetable (.pdf, .docx, .md, .txt)</div>
           <div className="dropzone-types">
             {accept.map(t => <span key={t} className="type-badge">{t}</span>)}
           </div>
@@ -1035,7 +1035,7 @@ function Dashboard({
                 Your Schedule is Empty
               </div>
               <div style={{ fontSize: '12px', maxWidth: '380px', margin: '0 auto', lineHeight: '1.5' }}>
-                Upload your course syllabus, class timetable, or schedule document (.docx, .txt, .md) above.
+                Upload your course syllabus, class timetable, or schedule document (.pdf, .docx, .txt, .md) above.
                 Chronos AI will automatically extract your classes and set alarms for your local time.
               </div>
             </div>
