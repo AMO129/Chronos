@@ -2017,7 +2017,8 @@ function SettingsView({
       </SettingsSection>
 
       {/* Native App & Cloud Deployment */}
-      <SettingsSection title="Native App & Cloud Deployment" icon={<IconDownload size={15} />}>
+      {/* Native App Installation */}
+      <SettingsSection title="Desktop & Mobile App Installation" icon={<IconDownload size={15} />}>
         <Row
           label="Standalone Desktop & Mobile App"
           sub={isInstalled ? "Chronos is currently running as an installed standalone app." : "Install Chronos to your PC desktop or phone home screen for offline access & native alerts."}
@@ -2032,22 +2033,6 @@ function SettingsView({
             </button>
           }
         />
-
-        <div style={{ background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', padding: '14px', border: '1px solid var(--border)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-            <span style={{ fontSize: '12.5px', fontWeight: 700, color: 'var(--text-primary)' }}>Deploy via Render (Free Static Site)</span>
-            <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--gold)', background: 'rgba(212,175,55,0.12)', padding: '2px 8px', borderRadius: '4px' }}>render.yaml Ready</span>
-          </div>
-          <p style={{ fontSize: '11.5px', color: 'var(--text-secondary)', lineHeight: '1.4', marginBottom: '10px' }}>
-            Deploy Chronos live on Render with automatic HTTPS and global CDN. Push this repository to GitHub, then create a new <strong>Static Site</strong> on Render.
-          </p>
-          <div style={{ background: '#0d0d0f', padding: '10px 12px', borderRadius: '6px', fontFamily: 'monospace', fontSize: '11px', color: '#c5c2be', border: '1px solid var(--border-strong)', lineHeight: '1.6', userSelect: 'all' }}>
-            <span style={{ color: 'var(--gold)' }}># 1. Add your GitHub remote</span><br/>
-            git remote add origin https://github.com/&lt;your-username&gt;/chronos.git<br/>
-            <span style={{ color: 'var(--gold)' }}># 2. Push to GitHub</span><br/>
-            git push -u origin main
-          </div>
-        </div>
       </SettingsSection>
     </div>
   );
