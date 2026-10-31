@@ -1,20 +1,13 @@
 /**
  * ChatView.tsx
- * Conversational Chatbot view for Chronos.
- * Enables conversing with Gemini/Local AI to build schedules,
- * modify events, ask timetable questions, and export directly to Google Drive/Docs.
+ * Dedicated Gemini-Style AI Assistant for Chronos.
+ * Chats with the user just like Gemini, extracts schedule tasks instantly,
+ * and automatically applies them directly to the Master Schedule with zero manual steps.
  */
 
 import { useState, useRef, useEffect } from 'react';
 import type { ScheduleEvent, UserProfile, ToastMsg } from './App';
 import { sendChatMessage, type ChatMessage } from './chatbotService';
-import {
-  isGoogleDriveConnected,
-  loadGoogleDriveConfig,
-  createGoogleDocWithSchedule,
-  downloadScheduleDocument,
-  requestGoogleDriveAccess,
-} from './googleDriveService';
 import { loadAISettings } from './aiScheduleExtractor';
 
 interface ChatViewProps {
@@ -22,7 +15,8 @@ interface ChatViewProps {
   onApplySchedule: (newEvents: ScheduleEvent[]) => void;
   userProfile: UserProfile;
   toast: (msg: string, type?: ToastMsg['type']) => void;
-  onOpenSettings: () => void;
+  onViewCalendar: () => void;
+  onBackToDashboard: () => void;
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -39,36 +33,42 @@ export default function ChatView({
   onApplySchedule,
   userProfile,
   toast,
-  onOpenSettings,
+  onViewCalendar,
+  onBackToDashboard,
 }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
       const saved = localStorage.getItem('chronos_chat_history');
       if (saved) return JSON.parse(saved);
     } catch {}
-    return [
-      {
-        id: 'welcome',
-        role: 'assistant',
-        content: `Hi **${userProfile.name}**! I'm your **Chronos AI Assistant**.\n\nYou can talk to me just like Gemini. Tell me what classes or tasks you want to schedule, and I'll place them on your calendar, arm your alarms, or create a Google Document for you in Google Drive.`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        actionType: 'info',
-      },
-    ];
+    return [];
   });
 
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
-  const [driveConnected, setDriveConnected] = useState(isGoogleDriveConnected());
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const aiSettings = loadAISettings();
-  const driveConfig = loadGoogleDriveConfig();
 
   useEffect(() => {
     localStorage.setItem('chronos_chat_history', JSON.stringify(messages));
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, isTyping]);
+
+  const handleApplyDraftEvents = (draftEvents: ScheduleEvent[]) => {
+    const combined = [...events];
+    draftEvents.forEach(draft => {
+      const existsIdx = combined.findIndex(e => e.day === draft.day && e.hour === draft.hour && e.minute === draft.minute);
+      if (existsIdx >= 0) {
+        combined[existsIdx] = draft;
+      } else {
+        combined.push(draft);
+      }
+    });
+
+    onApplySchedule(combined);
+    toast(`Automatically added ${draftEvents.length} event(s) to your Master Schedule with alarms armed!`, 'success');
+  };
 
   const handleSend = async (textToSend?: string) => {
     const text = (textToSend || input).trim();
@@ -88,13 +88,18 @@ export default function ChatView({
     try {
       const assistantMsg = await sendChatMessage(text, messages, events, userProfile);
       setMessages(prev => [...prev, assistantMsg]);
+
+      // AUTOMATICALLY APPLY IMMEDIATELY - Zero friction, zero download required!
+      if (assistantMsg.draftEvents && assistantMsg.draftEvents.length > 0) {
+        handleApplyDraftEvents(assistantMsg.draftEvents);
+      }
     } catch (err: any) {
       setMessages(prev => [
         ...prev,
         {
           id: `err_${Date.now()}`,
           role: 'assistant',
-          content: `I encountered an error: ${err.message || 'Unable to connect to AI'}. Please check your connection or API settings.`,
+          content: `I encountered an issue processing that: ${err.message || 'Please check your connection'}. You can try again or check Settings.`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           actionType: 'info',
         },
@@ -104,261 +109,217 @@ export default function ChatView({
     }
   };
 
-  const handleApplyDraft = (draftEvents: ScheduleEvent[]) => {
-    // Merge or replace
-    const combined = [...events];
-    draftEvents.forEach(draft => {
-      const existsIdx = combined.findIndex(e => e.day === draft.day && e.hour === draft.hour && e.minute === draft.minute);
-      if (existsIdx >= 0) {
-        combined[existsIdx] = draft;
-      } else {
-        combined.push(draft);
-      }
-    });
-
-    onApplySchedule(combined);
-    toast(`Applied ${draftEvents.length} events to your Master Schedule with alarms armed!`, 'success');
-  };
-
-  const handleCreateGoogleDoc = async (draftEvents?: ScheduleEvent[]) => {
-    const targetEvents = draftEvents || events;
-    if (targetEvents.length === 0) {
-      toast('No schedule events to export yet', 'info');
-      return;
-    }
-
-    if (!isGoogleDriveConnected()) {
-      if (!driveConfig.clientId) {
-        toast('Please enter your Google Client ID in Settings → Google Drive Integration', 'info');
-        onOpenSettings();
-        return;
-      }
-      requestGoogleDriveAccess(
-        driveConfig.clientId,
-        async (token) => {
-          setDriveConnected(true);
-          try {
-            const title = `${userProfile.name}'s Chronos Timetable`;
-            const { docUrl } = await createGoogleDocWithSchedule(title, targetEvents, undefined, token);
-            window.open(docUrl, '_blank');
-            toast('Google Doc created and opened!', 'success');
-          } catch (e: any) {
-            toast(`Drive Error: ${e.message}`, 'info');
-          }
-        },
-        (err) => toast(`Google Sign-In failed: ${err}`, 'info')
-      );
-      return;
-    }
-
-    try {
-      toast('Creating Google Document in your Google Drive...', 'info');
-      const title = `${userProfile.name}'s Chronos Timetable - ${new Date().toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`;
-      const { docUrl } = await createGoogleDocWithSchedule(title, targetEvents);
-      window.open(docUrl, '_blank');
-      toast('Google Document created successfully!', 'success');
-    } catch (err: any) {
-      toast(`Error creating Google Doc: ${err.message}`, 'info');
-    }
-  };
-
-  const handleDownloadDoc = (draftEvents?: ScheduleEvent[]) => {
-    const targetEvents = draftEvents || events;
-    downloadScheduleDocument(`${userProfile.name}_Chronos_Schedule`, targetEvents);
-    toast('Schedule document downloaded', 'success');
-  };
-
   const handleClearChat = () => {
     if (confirm('Clear chat conversation?')) {
-      const welcome: ChatMessage = {
-        id: 'welcome',
-        role: 'assistant',
-        content: `Conversation cleared. Tell me what you'd like to schedule, or ask a question!`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        actionType: 'info',
-      };
-      setMessages([welcome]);
+      setMessages([]);
       localStorage.removeItem('chronos_chat_history');
       toast('Chat history cleared');
     }
   };
 
   const suggestions = [
-    'Create an engineering study schedule for me',
-    'Add Friday 5:00 PM: Project Review',
-    'Create a Google Doc for my schedule',
+    'I have DSP Lab on Friday at 5:00 PM',
+    'Create a balanced weekly engineering study plan',
+    'Add Math on Monday 9:00 AM to 11:00 AM',
     'What do I have scheduled for Friday?',
   ];
 
   return (
     <div className="chat-layout fade-in">
-      {/* Header bar */}
+      {/* Top Navigation & Status Bar */}
       <div className="chat-header-bar">
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div className="brand-icon" style={{ width: 34, height: 34 }}>
-            <span style={{ fontSize: 16 }}>✨</span>
-          </div>
-          <div>
-            <div style={{ fontFamily: 'Manrope, sans-serif', fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)' }}>
-              Chronos AI Assistant
+          <button
+            className="btn-outline"
+            onClick={onBackToDashboard}
+            style={{ padding: '5px 10px', fontSize: '11.5px' }}
+            title="Return to Dashboard"
+          >
+            ← Back to Dashboard
+          </button>
+          <div style={{ width: '1px', height: '18px', background: 'var(--border)' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div className="brand-icon" style={{ width: 28, height: 28 }}>
+              <span style={{ fontSize: 14 }}>✨</span>
             </div>
-            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-              {aiSettings.apiKey ? 'Powered by Google Gemini 1.5 Flash' : 'Powered by Chronos Intelligent Assistant Engine'}
+            <div>
+              <div style={{ fontFamily: 'Manrope, sans-serif', fontWeight: 700, fontSize: '14px', color: 'var(--text-primary)' }}>
+                Gemini Schedule Assistant
+              </div>
+              <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                {aiSettings.apiKey ? 'Connected to Gemini 1.5 Flash' : 'Instant AI Extractor Active'}
+              </div>
             </div>
           </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {driveConnected ? (
-            <span className="status-pill status-pill-active" title="Connected to Google Drive">
-              <span className="status-dot-green" />
-              Drive Connected
-            </span>
-          ) : (
+          <button
+            className="btn-gold"
+            onClick={onViewCalendar}
+            style={{ padding: '5px 12px', fontSize: '11.5px' }}
+            title="View your Master Schedule calendar"
+          >
+            📅 View Master Schedule
+          </button>
+
+          {messages.length > 0 && (
             <button
               className="btn-outline"
-              onClick={onOpenSettings}
-              style={{ padding: '4px 10px', fontSize: '11px' }}
-              title="Connect your Google Drive in Settings"
+              onClick={handleClearChat}
+              style={{ padding: '5px 8px', fontSize: '11px', color: 'var(--text-muted)' }}
+              title="Clear chat"
             >
-              <span>Connect Drive</span>
+              Clear
             </button>
           )}
-
-          <button
-            className="btn-outline"
-            onClick={handleClearChat}
-            style={{ padding: '4px 8px', fontSize: '11px', color: 'var(--text-muted)' }}
-            title="Clear Chat History"
-          >
-            Clear
-          </button>
         </div>
       </div>
 
-      {/* Suggestion Chips */}
-      <div className="chat-chips-scroll">
-        {suggestions.map((s, idx) => (
-          <button
-            key={idx}
-            className="chat-suggestion-chip"
-            onClick={() => handleSend(s)}
-            disabled={isTyping}
-          >
-            {s}
-          </button>
-        ))}
-      </div>
-
-      {/* Messages Thread */}
+      {/* Main Messages Area */}
       <div className="chat-messages-container">
-        {messages.map((msg) => {
-          const isUser = msg.role === 'user';
-          return (
-            <div key={msg.id} className={`chat-message-row ${isUser ? 'chat-row-user' : 'chat-row-assistant'}`}>
-              {!isUser && (
-                <div className="chat-avatar-assistant">
-                  ✨
-                </div>
-              )}
-
-              <div className={`chat-bubble ${isUser ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}>
-                <div className="chat-bubble-text" style={{ whiteSpace: 'pre-wrap' }}>
-                  {msg.content}
-                </div>
-
-                {/* Interactive Schedule Block Card */}
-                {msg.draftEvents && msg.draftEvents.length > 0 && (
-                  <div className="chat-schedule-card">
-                    <div className="chat-schedule-header">
-                      <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--gold)' }}>
-                        🗓️ Extracted Schedule ({msg.draftEvents.length} events)
-                      </span>
-                      <span style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
-                        Precision Alarms Ready
-                      </span>
-                    </div>
-
-                    <div className="chat-schedule-list">
-                      {msg.draftEvents.map((ev, i) => {
-                        const h12 = ev.hour === 0 ? 12 : ev.hour > 12 ? ev.hour - 12 : ev.hour;
-                        const ampm = ev.hour >= 12 ? 'PM' : 'AM';
-                        const timeStr = `${h12}:${String(ev.minute).padStart(2, '0')} ${ampm}`;
-                        return (
-                          <div key={i} className="chat-schedule-item">
-                            <div className="chat-item-dot" style={{ background: CATEGORY_COLORS[ev.category] || 'var(--gold)' }} />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                                {ev.title}
-                              </div>
-                              <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                                {DAY_NAMES[ev.day]} · {timeStr} ({ev.duration}m) {ev.subtitle ? `· ${ev.subtitle}` : ''}
-                              </div>
-                            </div>
-                            <span className="cat-tag" style={{ fontSize: '9.5px', padding: '1px 6px' }}>
-                              {ev.category}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    <div className="chat-schedule-actions">
-                      <button
-                        className="btn-gold"
-                        onClick={() => handleApplyDraft(msg.draftEvents!)}
-                        style={{ padding: '6px 12px', fontSize: '11.5px', flex: 1, justifyContent: 'center' }}
-                      >
-                        ✓ Apply to Calendar & Arm Alarms
-                      </button>
-
-                      <button
-                        className="btn-outline"
-                        onClick={() => handleCreateGoogleDoc(msg.draftEvents)}
-                        style={{ padding: '6px 10px', fontSize: '11.5px' }}
-                        title="Create a Google Document in your Google Drive"
-                      >
-                        📁 Save to Google Drive
-                      </button>
-
-                      <button
-                        className="btn-outline"
-                        onClick={() => handleDownloadDoc(msg.draftEvents)}
-                        style={{ padding: '6px 8px', fontSize: '11.5px' }}
-                        title="Download as HTML / Markdown document"
-                      >
-                        ⬇
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Google Doc URL confirmation pill */}
-                {msg.googleDocUrl && (
-                  <div style={{ marginTop: '10px' }}>
-                    <a
-                      href={msg.googleDocUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="btn-gold"
-                      style={{ display: 'inline-flex', padding: '6px 12px', fontSize: '12px', textDecoration: 'none' }}
-                    >
-                      📄 Open Document in Google Docs →
-                    </a>
-                  </div>
-                )}
-
-                <div className="chat-bubble-time">{msg.timestamp}</div>
-              </div>
-
-              {isUser && (
-                <div className="chat-avatar-user">
-                  {userProfile.name.slice(0, 2).toUpperCase()}
-                </div>
-              )}
+        {messages.length === 0 ? (
+          /* Gemini Empty State Hero */
+          <div style={{ textAlign: 'center', margin: 'auto 0', padding: '30px 16px' }}>
+            <div style={{
+              width: 54, height: 54, borderRadius: '50%',
+              background: 'linear-gradient(135deg, rgba(212,175,55,0.2) 0%, rgba(212,175,55,0.05) 100%)',
+              border: '1px solid rgba(212,175,55,0.3)',
+              margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 0 24px var(--gold-glow)'
+            }}>
+              <span style={{ fontSize: 26 }}>✨</span>
             </div>
-          );
-        })}
+
+            <h2 style={{ fontFamily: 'Manrope, sans-serif', fontSize: '24px', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '8px' }}>
+              Hello, {userProfile.name.split(' ')[0]}
+            </h2>
+            <p style={{ fontSize: '13.5px', color: 'var(--text-secondary)', maxWidth: '440px', margin: '0 auto 24px', lineHeight: '1.55' }}>
+              Chat with Gemini just like a real assistant. Tell me what classes or tasks you have, and I will <strong>extract them and place them on your calendar with precision alarms armed immediately</strong>.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px', maxWidth: '640px', margin: '0 auto', textAlign: 'left' }}>
+              {suggestions.map((s, idx) => (
+                <div
+                  key={idx}
+                  onClick={() => handleSend(s)}
+                  style={{
+                    background: 'var(--bg-card)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius)',
+                    padding: '12px 14px',
+                    fontSize: '12.5px',
+                    color: 'var(--text-primary)',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                  }}
+                  onMouseEnter={e => {
+                    (e.currentTarget as HTMLElement).style.borderColor = 'var(--gold)';
+                    (e.currentTarget as HTMLElement).style.transform = 'translateY(-1px)';
+                  }}
+                  onMouseLeave={e => {
+                    (e.currentTarget as HTMLElement).style.borderColor = 'var(--border)';
+                    (e.currentTarget as HTMLElement).style.transform = 'translateY(0)';
+                  }}
+                >
+                  <span style={{ color: 'var(--gold)', marginRight: '6px' }}>💬</span>
+                  {s}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          messages.map((msg) => {
+            const isUser = msg.role === 'user';
+            return (
+              <div key={msg.id} className={`chat-message-row ${isUser ? 'chat-row-user' : 'chat-row-assistant'}`}>
+                {!isUser && (
+                  <div className="chat-avatar-assistant">
+                    ✨
+                  </div>
+                )}
+
+                <div className={`chat-bubble ${isUser ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}>
+                  <div className="chat-bubble-text" style={{ whiteSpace: 'pre-wrap' }}>
+                    {msg.content}
+                  </div>
+
+                  {/* Immediate Extracted Schedule Confirmation */}
+                  {msg.draftEvents && msg.draftEvents.length > 0 && (
+                    <div className="chat-schedule-card">
+                      <div className="chat-schedule-header">
+                        <span style={{ fontSize: '12px', fontWeight: 600, color: '#78d28e', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span className="status-dot-green" />
+                          Live on Your Calendar ({msg.draftEvents.length} events)
+                        </span>
+                        <span style={{ fontSize: '11px', color: 'var(--gold)', fontWeight: 600 }}>
+                          Alarms Armed 🔔
+                        </span>
+                      </div>
+
+                      <div className="chat-schedule-list">
+                        {msg.draftEvents.map((ev, i) => {
+                          const h12 = ev.hour === 0 ? 12 : ev.hour > 12 ? ev.hour - 12 : ev.hour;
+                          const ampm = ev.hour >= 12 ? 'PM' : 'AM';
+                          const timeStr = `${h12}:${String(ev.minute).padStart(2, '0')} ${ampm}`;
+                          return (
+                            <div key={i} className="chat-schedule-item">
+                              <div className="chat-item-dot" style={{ background: CATEGORY_COLORS[ev.category] || 'var(--gold)' }} />
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                                  {ev.title}
+                                </div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                                  {DAY_NAMES[ev.day]} · {timeStr} ({ev.duration}m) {ev.subtitle ? `· ${ev.subtitle}` : ''}
+                                </div>
+                              </div>
+                              <span className="cat-tag" style={{ fontSize: '9.5px', padding: '1px 6px' }}>
+                                {ev.category}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '6px', borderTop: '1px solid var(--border)' }}>
+                        <button
+                          className="btn-gold"
+                          onClick={onViewCalendar}
+                          style={{ padding: '5px 12px', fontSize: '11.5px' }}
+                        >
+                          📅 Open Master Schedule →
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Google Doc confirmation pill */}
+                  {msg.googleDocUrl && (
+                    <div style={{ marginTop: '10px' }}>
+                      <a
+                        href={msg.googleDocUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn-gold"
+                        style={{ display: 'inline-flex', padding: '6px 12px', fontSize: '12px', textDecoration: 'none' }}
+                      >
+                        📄 Open Google Doc →
+                      </a>
+                    </div>
+                  )}
+
+                  <div className="chat-bubble-time">{msg.timestamp}</div>
+                </div>
+
+                {isUser && (
+                  <div className="chat-avatar-user">
+                    {userProfile.name.slice(0, 2).toUpperCase()}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
 
         {isTyping && (
           <div className="chat-message-row chat-row-assistant">
@@ -374,11 +335,27 @@ export default function ChatView({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input bar */}
+      {/* Suggestion Chips (when chat has messages) */}
+      {messages.length > 0 && (
+        <div className="chat-chips-scroll">
+          {suggestions.map((s, idx) => (
+            <button
+              key={idx}
+              className="chat-suggestion-chip"
+              onClick={() => handleSend(s)}
+              disabled={isTyping}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Floating Prompt Input Bar */}
       <div className="chat-input-bar">
         <input
           className="chat-input-field"
-          placeholder="Ask Chronos AI or say: 'Create a schedule for Monday 9am Math and Friday 5pm Review'..."
+          placeholder="Message Gemini... e.g. 'I have DSP Lab on Friday at 5:00 PM and Math on Monday at 9:00 AM'"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -388,6 +365,7 @@ export default function ChatView({
             }
           }}
           disabled={isTyping}
+          autoFocus
         />
         <button
           className="btn-gold"
@@ -395,7 +373,7 @@ export default function ChatView({
           disabled={!input.trim() || isTyping}
           style={{ padding: '8px 16px', fontSize: '13px' }}
         >
-          Send
+          Send →
         </button>
       </div>
     </div>

@@ -646,6 +646,8 @@ function Sidebar({
 // ─── Topbar ───────────────────────────────────────────────────────────────────
 function Topbar({
   title,
+  currentView,
+  onNavigate,
   onOpenAlarm,
   alarmCount,
   onTestAlarm,
@@ -653,6 +655,8 @@ function Topbar({
   onOpenProfile,
 }: {
   title: string;
+  currentView: NavView;
+  onNavigate: (v: NavView) => void;
   onOpenAlarm: () => void;
   alarmCount: number;
   onTestAlarm: () => void;
@@ -661,7 +665,35 @@ function Topbar({
 }) {
   return (
     <div className="topbar">
-      <div className="topbar-title">{title}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+        <div className="topbar-title">{title}</div>
+        <div className="topbar-nav-pills">
+          <button
+            className={`topbar-pill ${currentView === 'dashboard' ? 'active' : ''}`}
+            onClick={() => onNavigate('dashboard')}
+          >
+            Dashboard
+          </button>
+          <button
+            className={`topbar-pill topbar-pill-gemini ${currentView === 'chat' ? 'active' : ''}`}
+            onClick={() => onNavigate('chat')}
+          >
+            <span style={{ color: 'var(--gold)' }}>✨</span> Chat with Gemini
+          </button>
+          <button
+            className={`topbar-pill ${currentView === 'calendar' ? 'active' : ''}`}
+            onClick={() => onNavigate('calendar')}
+          >
+            Master Schedule
+          </button>
+          <button
+            className={`topbar-pill ${currentView === 'alarms' ? 'active' : ''}`}
+            onClick={() => onNavigate('alarms')}
+          >
+            Alarms {alarmCount > 0 && `(${alarmCount})`}
+          </button>
+        </div>
+      </div>
       <div className="topbar-actions">
         {alarmCount > 0 && (
           <button
@@ -976,6 +1008,79 @@ function Dashboard({
             sub={todayEvents.length > 0 ? `${completedTodayCount}/${todayEvents.length} complete` : "No events today"}
             color="#7ec49a"
           />
+        </div>
+
+        {/* Action Choice Banner: Chat with Gemini or Upload */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px', margin: '14px 0' }}>
+          <div
+            onClick={onOpenChat}
+            style={{
+              background: 'linear-gradient(135deg, rgba(212,175,55,0.10) 0%, rgba(212,175,55,0.02) 100%)',
+              border: '1px solid rgba(212,175,55,0.35)',
+              borderRadius: 'var(--radius)',
+              padding: '16px',
+              cursor: 'pointer',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              gap: '12px',
+              transition: 'all 0.2s ease',
+            }}
+          >
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                <span style={{ fontSize: '18px' }}>✨</span>
+                <span style={{ fontFamily: 'Manrope, sans-serif', fontSize: '14px', fontWeight: 700, color: 'var(--gold)' }}>
+                  Chat with Gemini AI
+                </span>
+                <span style={{ fontSize: '9px', background: 'var(--gold)', color: '#0a0800', fontWeight: 700, padding: '1px 6px', borderRadius: '4px' }}>
+                  EASIEST
+                </span>
+              </div>
+              <p style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.45' }}>
+                Don't have a schedule file? Chat with Gemini just like Google Gemini. It automatically extracts your timetable and arms all alarms immediately.
+              </p>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', fontWeight: 600, color: 'var(--gold)' }}>
+              <span>Start Chatting with Gemini</span>
+              <span>→</span>
+            </div>
+          </div>
+
+          <div
+            onClick={() => {
+              const el = document.querySelector('.dropzone') as HTMLElement;
+              el?.scrollIntoView({ behavior: 'smooth' });
+            }}
+            style={{
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius)',
+              padding: '16px',
+              cursor: 'pointer',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              gap: '12px',
+              transition: 'all 0.2s ease',
+            }}
+          >
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                <span style={{ fontSize: '18px' }}>📁</span>
+                <span style={{ fontFamily: 'Manrope, sans-serif', fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  Upload Existing File
+                </span>
+              </div>
+              <p style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.45' }}>
+                Already have a timetable file? Drop your <strong>.pdf</strong>, <strong>.docx</strong>, <strong>.txt</strong>, or <strong>.md</strong> document into the uploader below.
+              </p>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+              <span>Jump to Uploader</span>
+              <span>↓</span>
+            </div>
+          </div>
         </div>
 
         {/* Dropzone */}
@@ -2228,6 +2333,8 @@ export default function App() {
       <div className="main-area">
         <Topbar
           title={titles[view]}
+          currentView={view}
+          onNavigate={setView}
           onOpenAlarm={() => {
             const first = events.find(e => e.alarmEnabled) || events[0];
             setActiveAlarmEvent(first || null);
@@ -2259,7 +2366,7 @@ export default function App() {
         )}
 
         {view === 'chat' && (
-          <div style={{ padding: '20px 24px', height: 'calc(100% - 60px)', overflow: 'hidden' }}>
+          <div style={{ padding: '16px 20px', height: 'calc(100% - 60px)', overflow: 'hidden' }}>
             <ChatView
               events={events}
               onApplySchedule={newEvents => {
@@ -2269,7 +2376,8 @@ export default function App() {
               }}
               userProfile={userProfile}
               toast={toast}
-              onOpenSettings={() => setView('settings')}
+              onViewCalendar={() => setView('calendar')}
+              onBackToDashboard={() => setView('dashboard')}
             />
           </div>
         )}

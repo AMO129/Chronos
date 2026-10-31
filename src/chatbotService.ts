@@ -296,11 +296,11 @@ function generateLocalAssistantResponse(
     return {
       id: newChatId(),
       role: 'assistant',
-      content: `I extracted **${draftEvents.length} scheduled event(s)** from your message:\n\n${previewList}\n\nYou can click **"Apply to Calendar"** below to add these to your master schedule and arm your alarms immediately, or export them to a Google Doc.`,
+      content: `✅ **Extracted and automatically added to your Master Schedule!**\n\n${previewList}\n\nAll precision alarms are armed for your local timezone.`,
       timestamp: timeStr,
       draftEvents,
       actionType: 'create_schedule',
-      statusNote: `${draftEvents.length} events ready to apply`,
+      statusNote: `${draftEvents.length} events added to calendar`,
     };
   }
 
@@ -317,17 +317,17 @@ function generateLocalAssistantResponse(
     return {
       id: newChatId(),
       role: 'assistant',
-      content: `I have designed a balanced **${userProfile.department} weekly schedule** for you! It covers core academic lectures, engineering labs, Friday review, and reflection blocks:\n\n` +
+      content: `✅ **Custom study schedule generated and added to your Master Schedule!**\n\n` +
         `• **Mon 9:00 AM** — Mathematics & Algorithms (2h)\n` +
         `• **Mon 2:00 PM** — Engineering Circuit Lab (1.5h)\n` +
         `• **Wed 10:00 AM** — Software Architecture & Code (2h)\n` +
         `• **Fri 2:00 PM** — Spiritual Reflection & Devotion (1.5h)\n` +
         `• **Fri 5:00 PM** — Weekly Engineering Review (1h)\n\n` +
-        `Click **"Apply to Calendar & Arm Alarms"** below to load it into your dashboard, or ask me to change any times!`,
+        `All alarms are armed. Just tell me if you'd like to adjust any times or add more classes!`,
       timestamp: timeStr,
       draftEvents: defaultStudyPlan,
       actionType: 'create_schedule',
-      statusNote: 'Custom schedule drafted',
+      statusNote: 'Custom schedule active',
     };
   }
 
