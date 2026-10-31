@@ -7,6 +7,14 @@ import {
   getLocalTimeZone,
   type AISettings,
 } from './aiScheduleExtractor';
+import ChatView from './ChatView';
+import {
+  loadGoogleDriveConfig,
+  saveGoogleDriveConfig,
+  isGoogleDriveConnected,
+  disconnectGoogleDrive,
+  requestGoogleDriveAccess,
+} from './googleDriveService';
 
 // ─── SVG Icons ──────────────────────────────────────────────────────────────
 type IconProps = { size?: number; className?: string; style?: React.CSSProperties };
@@ -121,7 +129,7 @@ const IconPhone = ({ size = 14, className = '', style }: IconProps) => (
 );
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-type NavView = 'dashboard' | 'calendar' | 'alarms' | 'settings';
+type NavView = 'dashboard' | 'calendar' | 'alarms' | 'settings' | 'chat';
 type Category = 'academic' | 'spiritual' | 'engineering' | 'meeting';
 type AlarmMode = 'sound' | 'popup';
 
@@ -332,7 +340,7 @@ function formatCountdown(sec: number): string {
 }
 
 // ─── Toast System ─────────────────────────────────────────────────────────────
-interface ToastMsg { id: number; text: string; type?: 'success' | 'info' }
+export interface ToastMsg { id: number; text: string; type?: 'success' | 'info' }
 let _toastId = 0;
 
 function ToastContainer({ toasts, dismiss }: { toasts: ToastMsg[]; dismiss: (id: number) => void }) {
@@ -568,6 +576,12 @@ function Sidebar({
           {alarmCount > 0 && <span className="nav-badge">{alarmCount}</span>}
         </div>
 
+        <div className={`nav-item ${view === 'chat' ? 'active' : ''}`} onClick={() => setView('chat')}>
+          <IconSparkles size={16} className="nav-icon" style={{ color: 'var(--gold)' }} />
+          <span>AI Assistant</span>
+          <span className="nav-badge" style={{ background: 'rgba(212,175,55,0.15)', color: 'var(--gold)' }}>AI</span>
+        </div>
+
         <div className="nav-section-label">System</div>
 
         <div className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>
@@ -780,6 +794,7 @@ function StatCard({ label, value, sub, color }: { label: string; value: string |
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 function Dashboard({
   onViewCalendar,
+  onOpenChat,
   events,
   setEvents,
   alarmMode,
@@ -791,6 +806,7 @@ function Dashboard({
   toast,
 }: {
   onViewCalendar: () => void;
+  onOpenChat?: () => void;
   events: ScheduleEvent[];
   setEvents: React.Dispatch<React.SetStateAction<ScheduleEvent[]>>;
   alarmMode: AlarmMode;
@@ -971,15 +987,27 @@ function Dashboard({
                 AI auto-extracts your timetable and arms all alarms automatically.
               </div>
             </div>
-            <button
-              onClick={() => setPasteModalOpen(true)}
-              className="btn-outline"
-              style={{ fontSize: '11px', padding: '4px 10px' }}
-              title="Paste your timetable text directly"
-            >
-              <IconSparkles size={12} style={{ color: 'var(--gold)' }} />
-              <span>Paste Schedule Text</span>
-            </button>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {onOpenChat && (
+                <button
+                  onClick={onOpenChat}
+                  className="btn-outline"
+                  style={{ fontSize: '11px', padding: '4px 10px', borderColor: 'rgba(212,175,55,0.3)', color: 'var(--gold)', background: 'rgba(212,175,55,0.06)' }}
+                  title="Chat with Chronos AI to create a schedule"
+                >
+                  <IconSparkles size={12} style={{ color: 'var(--gold)' }} />
+                  <span>Create with AI Chat</span>
+                </button>
+              )}
+              <button
+                onClick={() => setPasteModalOpen(true)}
+                className="btn-outline"
+                style={{ fontSize: '11px', padding: '4px 10px' }}
+                title="Paste your timetable text directly"
+              >
+                <span>Paste Text</span>
+              </button>
+            </div>
           </div>
 
           <Dropzone
@@ -1038,6 +1066,14 @@ function Dashboard({
                 Upload your course syllabus, class timetable, or schedule document (.pdf, .docx, .txt, .md) above.
                 Chronos AI will automatically extract your classes and set alarms for your local time.
               </div>
+              {onOpenChat && (
+                <div style={{ marginTop: '14px', display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                  <button className="btn-gold" onClick={onOpenChat} style={{ padding: '7px 16px', fontSize: '12.5px' }}>
+                    <IconSparkles size={13} />
+                    <span>Create Schedule with AI Chat →</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1589,7 +1625,7 @@ function SettingsView({
   onSignOut: () => void;
   onInstallApp: () => void;
   isInstalled: boolean;
-  toast: (msg: string) => void;
+  toast: (msg: string, type?: ToastMsg['type']) => void;
 }) {
   const [snoozeDur, setSnoozeDur] = useState(5);
   const [username, setUsername] = useState(userProfile.name);
@@ -1599,6 +1635,39 @@ function SettingsView({
 
   // AI LLM Extractor Settings
   const [aiSettings, setAiSettings] = useState<AISettings>(loadAISettings);
+
+  // Google Drive Integration Settings
+  const [driveConfig, setDriveConfig] = useState(loadGoogleDriveConfig);
+  const [driveClientId, setDriveClientId] = useState(driveConfig.clientId || '');
+  const [isDriveConnected, setIsDriveConnected] = useState(isGoogleDriveConnected);
+
+  const handleConnectDrive = () => {
+    if (!driveClientId.trim()) {
+      toast('Please enter a Google Client ID below to connect', 'info');
+      return;
+    }
+    requestGoogleDriveAccess(
+      driveClientId.trim(),
+      (_token, email) => {
+        setIsDriveConnected(true);
+        setDriveConfig(loadGoogleDriveConfig());
+        toast(`Connected to Google Drive as ${email || 'user'}!`, 'success');
+      },
+      (err) => toast(`Google Drive connection error: ${err}`, 'info')
+    );
+  };
+
+  const handleDisconnectDrive = () => {
+    disconnectGoogleDrive();
+    setIsDriveConnected(false);
+    setDriveConfig(loadGoogleDriveConfig());
+    toast('Disconnected from Google Drive');
+  };
+
+  const handleSaveDriveClientId = () => {
+    saveGoogleDriveConfig({ ...driveConfig, clientId: driveClientId.trim() });
+    toast('Google Client ID saved');
+  };
 
   const userTimezone = getLocalTimeZone();
 
@@ -1753,6 +1822,39 @@ function SettingsView({
           <button className="btn-gold" onClick={handleSaveAI} style={{ padding: '6px 14px' }}>
             <IconCheck size={13} /> Save AI Settings
           </button>
+        </div>
+      </SettingsSection>
+
+      {/* Google Drive & Docs Integration */}
+      <SettingsSection title="Google Drive Integration" icon={<IconDownload size={15} />}>
+        <Row
+          label="Google Drive Connection"
+          sub={driveConfig.userEmail ? `Connected as ${driveConfig.userEmail}` : 'Connect to create Google Docs directly from Chronos AI'}
+          right={
+            isDriveConnected ? (
+              <button className="btn-outline" onClick={handleDisconnectDrive} style={{ padding: '4px 10px', fontSize: '11px', color: '#e05252' }}>
+                Disconnect
+              </button>
+            ) : (
+              <button className="btn-gold" onClick={handleConnectDrive} style={{ padding: '4px 12px', fontSize: '11px' }}>
+                Connect Google Account
+              </button>
+            )
+          }
+        />
+
+        <div>
+          <label className="modal-label">Google OAuth Client ID</label>
+          <input
+            className="modal-input"
+            placeholder="e.g. 123456789-abcdef.apps.googleusercontent.com"
+            value={driveClientId}
+            onChange={e => setDriveClientId(e.target.value)}
+            onBlur={handleSaveDriveClientId}
+          />
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+            Allows the Chronos Chatbot to create native Google Documents in your Google Drive. Leave empty to use instant offline document downloads.
+          </div>
         </div>
       </SettingsSection>
 
@@ -2058,6 +2160,7 @@ export default function App() {
     calendar:  'Master Schedule',
     alarms:    'Alarms',
     settings:  'Settings',
+    chat:      'Chronos AI Assistant',
   };
 
   const handleTestAlarm = () => {
@@ -2139,6 +2242,7 @@ export default function App() {
         {view === 'dashboard' && (
           <Dashboard
             onViewCalendar={() => setView('calendar')}
+            onOpenChat={() => setView('chat')}
             events={events}
             setEvents={setEvents}
             alarmMode={alarmMode}
@@ -2152,6 +2256,22 @@ export default function App() {
             completedIds={completedIds}
             toast={toast}
           />
+        )}
+
+        {view === 'chat' && (
+          <div style={{ padding: '20px 24px', height: 'calc(100% - 60px)', overflow: 'hidden' }}>
+            <ChatView
+              events={events}
+              onApplySchedule={newEvents => {
+                setEvents(newEvents);
+                localStorage.setItem('chronos_events', JSON.stringify(newEvents));
+                if (alarmMode === 'sound') playAlarmChime();
+              }}
+              userProfile={userProfile}
+              toast={toast}
+              onOpenSettings={() => setView('settings')}
+            />
+          </div>
         )}
 
         {view === 'calendar' && (
